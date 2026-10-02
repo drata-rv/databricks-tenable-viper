@@ -6,10 +6,11 @@ variables:
     default: vipr-drata-test
   warehouse_id:
     default: ""
+  # No source-table defaults: each target sets its own, so prod can never inherit a test table.
   findings_table:
-    default: si_test_catalog.nw_harmonized_sensitive.t_vipr_all_findings
+    default: ""
   assets_table:
-    default: si_test_catalog.nw_harmonized_sensitive.t_vipr_all_assets
+    default: ""
   workspace_name:
     default: test
   drata_prod:
@@ -30,7 +31,7 @@ variables:
 artifacts:
   vipr_drata:
     type: whl
-    build: python -m build --wheel
+    build: rm -rf build dist && python -m build --wheel
     path: .
 
 resources:
@@ -97,6 +98,9 @@ targets:
   test:
     default: true
     mode: development
+    variables:
+      findings_table: si_test_catalog.nw_harmonized_sensitive.t_vipr_all_findings
+      assets_table: si_test_catalog.nw_harmonized_sensitive.t_vipr_all_assets
   prod:
     mode: production
     workspace:
@@ -106,7 +110,10 @@ targets:
       workspace_name: prod
       drata_prod: "true"
       # Vipr tables are only documented in si_test_catalog (docs/Vipr Tables Describe.xlsx).
-      # Override findings_table / assets_table here once Nationwide confirms a prod location.
+      # findings_table / assets_table intentionally empty -> the job fails closed until Nationwide
+      # confirms a prod location (the CLI also refuses test-catalog sources with Drata prod).
+      findings_table: ""
+      assets_table: ""
       tenable_assets_table: si_prod_catalog.nw_harmonized_sensitive.t_tenable_assets
     # run_as:
     #   service_principal_name: <application-id-uuid>

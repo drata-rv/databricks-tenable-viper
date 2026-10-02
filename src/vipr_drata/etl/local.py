@@ -40,7 +40,7 @@ def load_local_tables(directory):
                      if os.path.exists(p)), None)
         if path is None:
             if spec.required:
-                raise FileNotFoundError("missing %s.csv/.json in %s (run scripts/generate_local_data.py)"
+                raise FileNotFoundError("missing %s.csv/.json in %s (delete the directory to regenerate synthetic data)"
                                         % (spec.label, directory))
             continue
         out[spec.label] = _latest_batch(_read(path))

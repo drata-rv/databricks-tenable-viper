@@ -51,8 +51,9 @@ def merge(tables):
     """Findings drive scope. Assets indexed {silk_id: [rows]} (list, not last-wins)."""
     assets = {}
     for a in tables.get("assets", []):
-        assets.setdefault(a.get("silk_id"), []).append(a)
+        if a.get("silk_id"):  # null ids never join
+            assets.setdefault(a["silk_id"], []).append(a)
     return [
-        {"finding": f, "assets": assets.get(f.get("asset_silk_id"), [])}
+        {"finding": f, "assets": assets.get(f.get("asset_silk_id"), []) if f.get("asset_silk_id") else []}
         for f in tables.get("findings", [])
     ], tables.get("assets", [])

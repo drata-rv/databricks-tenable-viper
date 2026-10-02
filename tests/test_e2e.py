@@ -8,21 +8,27 @@ from vipr_drata import cli
 FINDINGS = [{"silk_id": "f1", "severity": "medium", "tool_severity": '{"tenable": "high"}', "open": "true",
              "has_ticket": "true", "sla_date": "2999-01-01 00:00:00", "asset_silk_id": "a1"}]
 ASSETS = [{"silk_id": "a1", "name": "host1", "is_active": "true", "last_seen": "2000-01-01 00:00:00"}]
+IDS = {"FINDINGS": ("11", "12"), "ASSETS": ("21", "22")}
 
 
 def fake_run_sql(client, wh, sql):
-    assert "MAX(__date)" in sql  # latest-batch filter applied to every table
     assert "SELECT *" not in sql and "__raw" not in sql  # explicit columns only
+    assert "MAX(__date)" in sql  # latest-batch filter on every table
     return FINDINGS if "FROM c.s.t_vipr_all_findings" in sql else ASSETS
 
 
 def _env(monkeypatch, tmp_path):
     monkeypatch.setenv("VIPR_FINDINGS_TABLE", "c.s.t_vipr_all_findings")
     monkeypatch.setenv("VIPR_ASSETS_TABLE", "c.s.t_vipr_all_assets")
-    for n in ("FINDINGS", "ASSETS"):
-        monkeypatch.setenv("DRATA_%s_CONNECTION_ID" % n, "1")
-        monkeypatch.setenv("DRATA_%s_RESOURCE_ID" % n, "2")
+    for n, (c, r) in IDS.items():
+        monkeypatch.setenv("DRATA_%s_CONNECTION_ID" % n, c)
+        monkeypatch.setenv("DRATA_%s_RESOURCE_ID" % n, r)
     return ["--warehouse-id", "w", "--output-dir", str(tmp_path)]
+
+
+def _patched(**kw):
+    stack = [mock.patch.object(cli, "get_client_for_env"), mock.patch("vipr_drata.etl.extract.run_sql", fake_run_sql)]
+    return stack
 
 
 def test_dry_run_end_to_end(monkeypatch, tmp_path):
@@ -31,18 +37,35 @@ def test_dry_run_end_to_end(monkeypatch, tmp_path):
         assert cli.main(args + ["--dry-run"]) == 0
     f = json.load(open(tmp_path / "findings.json"))
     a = json.load(open(tmp_path / "asset_scan_coverage.json"))
-    assert f[0]["severityDirection"] == "downgraded" and not f[0]["slaBreached"]
-    assert a[0]["scanStale"] is True
+    assert f[0]["severityDirection"] == "downgraded" and f[0]["slaBreached"] is False
+    assert a[0]["viprLastSeenStale"] is True and a[0]["tenableMatch"] == "not_configured"
 
 
-def test_push_end_to_end(monkeypatch, tmp_path):
+def test_push_wires_each_resource_to_its_own_ids(monkeypatch, tmp_path, capsys):
     args = _env(monkeypatch, tmp_path)
-    monkeypatch.setenv("DRATA_API_KEY", "k")
+    monkeypatch.setenv("DRATA_API_KEY", "sandbox-key")
     with mock.patch.object(cli, "get_client_for_env"), mock.patch("vipr_drata.etl.extract.run_sql", fake_run_sql), \
-            mock.patch.object(cli.DrataClient, "upsert", return_value=(1, [])) as push:
+            mock.patch.object(cli, "DrataClient") as DC:
+        DC.return_value.upsert.return_value = (1, [])
         assert cli.main(args) == 0
-    assert push.call_count == 2 and push.call_args.args[:2] == ("1", "2")
-    assert push.call_args.args[2][0]["id"] == "a1"
+    assert DC.call_args.args[1] == "sandbox-key"
+    (c1, c2) = DC.return_value.upsert.call_args_list
+    assert c1.args[:2] == ("11", "12") and c1.args[2][0]["id"] == "f1"
+    assert c2.args[:2] == ("21", "22") and c2.args[2][0]["id"] == "a1"
+    assert "Drata tenant: sandbox | push mode: upsert" in capsys.readouterr().out
+
+
+def test_prod_flag_uses_prod_key_and_never_sandbox(monkeypatch, tmp_path):
+    args = _env(monkeypatch, tmp_path)
+    monkeypatch.setenv("DRATA_API_KEY", "sandbox-key")
+    with mock.patch.object(cli, "get_client_for_env"), mock.patch("vipr_drata.etl.extract.run_sql", fake_run_sql):
+        with pytest.raises(RuntimeError):  # prod key missing: must not fall back
+            cli.main(args + ["--drata-prod"])
+        monkeypatch.setenv("DRATA_API_KEY_PROD", "prod-key")
+        with mock.patch.object(cli, "DrataClient") as DC:
+            DC.return_value.upsert.return_value = (1, [])
+            assert cli.main(args + ["--drata-prod"]) == 0
+    assert DC.call_args.args[1] == "prod-key"
 
 
 def test_session_mode_failure_returns_nonzero(monkeypatch, tmp_path):
@@ -53,6 +76,62 @@ def test_session_mode_failure_returns_nonzero(monkeypatch, tmp_path):
                               return_value=(0, [{"id": "f1", "error": "x"}], "cancel")):
         assert cli.main(args + ["--push-mode", "session"]) == 1
     assert (tmp_path / "_failed_findings.json").exists()
+
+
+def test_session_mode_refused_when_anything_rejected(monkeypatch, tmp_path):
+    args = _env(monkeypatch, tmp_path)
+    monkeypatch.setenv("DRATA_API_KEY", "k")
+    bad = FINDINGS + [dict(FINDINGS[0], severity="high")] * 0 + [dict(FINDINGS[0], silk_id="")]
+    with mock.patch.object(cli, "get_client_for_env"), \
+            mock.patch("vipr_drata.etl.extract.run_sql", lambda c, w, sql: bad if "findings" in sql.split("FROM")[1] else ASSETS), \
+            mock.patch.object(cli.DrataClient, "replace_via_session", return_value=(1, [], "complete")) as sess:
+        rc = cli.main(args + ["--push-mode", "session", "--max-reject-ratio", "0.9"])
+    assert rc == 1
+    assert [c.args[0] for c in sess.call_args_list] == ["21"]  # findings skipped (rejected>0), assets replaced
+
+
+def test_reject_ratio_guard_aborts_before_push(monkeypatch, tmp_path):
+    args = _env(monkeypatch, tmp_path)
+    monkeypatch.setenv("DRATA_API_KEY", "k")
+    bad = [dict(FINDINGS[0], silk_id="")] * 3 + FINDINGS
+    with mock.patch.object(cli, "get_client_for_env"), \
+            mock.patch("vipr_drata.etl.extract.run_sql", lambda c, w, sql: bad if "FROM c.s.t_vipr_all_findings" in sql else ASSETS), \
+            mock.patch.object(cli, "DrataClient") as DC:
+        assert cli.main(args) == 2
+    DC.assert_not_called()
+
+
+def test_prod_with_test_catalog_source_refused(monkeypatch, tmp_path):
+    args = _env(monkeypatch, tmp_path)
+    monkeypatch.setenv("VIPR_FINDINGS_TABLE", "si_test_catalog.s.t")
+    with pytest.raises(SystemExit) as e:
+        cli.main(args + ["--drata-prod"])
+    assert e.value.code == 2
+
+
+def test_bad_env_values_fail_loudly(monkeypatch, tmp_path):
+    with pytest.raises(SystemExit):
+        cli.main(["--local", "--env", "NOEQUALS", "--local-data", str(tmp_path / "d")])
+    monkeypatch.setenv("DRATA_PUSH_MODE", "Session")
+    with pytest.raises(SystemExit):
+        cli.main(["--local", "--local-data", str(tmp_path / "d"), "--output-dir", str(tmp_path)])
+
+
+def test_env_flag_forms_and_precedence(monkeypatch, tmp_path):
+    monkeypatch.setenv("OUTPUT_DIR", "ignored")
+    out = tmp_path / "o"
+    rc = cli.main(["--local", "--local-data", str(tmp_path / "d"), "--env", "OUTPUT_DIR=" + str(out),
+                   "--env=SCAN_STALE_DAYS=3"])
+    assert rc == 0 and (out / "findings.json").exists()
+    import os
+    assert os.environ["SCAN_STALE_DAYS"] == "3"
+
+
+def test_run_exits_with_main_status(monkeypatch):
+    monkeypatch.setattr(cli, "main", lambda: 1)
+    with pytest.raises(SystemExit) as e:
+        cli.run()
+    assert e.value.code == 1
 
 
 def test_local_mode_runs_without_databricks(tmp_path):
@@ -68,17 +147,28 @@ def test_local_mode_runs_without_databricks(tmp_path):
     assert f["f-002"]["slaBreached"] and f["f-002"]["missingTicket"]
     assert f["f-005"]["severityChanged"] is None and f["f-006"]["assetName"] is None
     assert a["a-001"]["tenableMatch"] == "matched" and a["a-002"]["tenableMatch"] == "ambiguous"
-    assert a["a-002"]["scanStale"] is True and "a-004" not in a
-    assert {r["reason"] for r in rej} == {"missing silk_id", "duplicate asset id in latest batch"}
+    assert a["a-002"]["viprLastSeenStale"] is True and "a-004" not in a
+    assert {(r["resource"], r["reason"]) for r in rej} == {
+        ("findings", "missing silk_id"), ("assets", "conflicting duplicate asset id in latest batch")}
 
 
-def test_local_rejects_prod_and_pushes_only_with_flag(monkeypatch, tmp_path):
+def test_local_regenerates_when_dir_empty_and_rejects_prod(monkeypatch, tmp_path):
+    d = tmp_path / "d"
+    d.mkdir()  # exists but empty -> generated
+    assert cli.main(["--local", "--local-data", str(d), "--output-dir", str(tmp_path / "o")]) == 0
+    assert (d / "findings.csv").exists()
     with pytest.raises(SystemExit):
-        cli.main(["--local", "--drata-prod", "--local-data", str(tmp_path / "d"), "--output-dir", str(tmp_path)])
-    for n in ("FINDINGS", "ASSETS"):
-        monkeypatch.setenv("DRATA_%s_CONNECTION_ID" % n, "1")
-        monkeypatch.setenv("DRATA_%s_RESOURCE_ID" % n, "2")
-    monkeypatch.setenv("DRATA_API_KEY", "k")
-    with mock.patch.object(cli.DrataClient, "upsert", return_value=(1, [])) as up:
+        cli.main(["--local", "--drata-prod", "--local-data", str(d), "--output-dir", str(tmp_path)])
+
+
+def test_local_push_goes_to_sandbox_only(monkeypatch, tmp_path):
+    for n, (c, r) in IDS.items():
+        monkeypatch.setenv("DRATA_%s_CONNECTION_ID" % n, c)
+        monkeypatch.setenv("DRATA_%s_RESOURCE_ID" % n, r)
+    monkeypatch.setenv("DRATA_API_KEY", "sandbox-key")
+    monkeypatch.setenv("DRATA_API_KEY_PROD", "prod-key")
+    with mock.patch.object(cli, "DrataClient") as DC:
+        DC.return_value.upsert.return_value = (1, [])
         assert cli.main(["--local", "--push", "--local-data", str(tmp_path / "d"), "--output-dir", str(tmp_path)]) == 0
-    assert up.call_count == 2
+    assert DC.call_args.args[1] == "sandbox-key"
+    assert DC.return_value.upsert.call_count == 2

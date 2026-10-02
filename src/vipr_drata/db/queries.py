@@ -22,6 +22,17 @@ def is_true(value):
     return str(value).strip().lower() in ("true", "1", "t", "yes")
 
 
+def _download(url, chunk_index):
+    """Fetch one result chunk. Errors never carry the pre-signed URL (it is a short-lived credential)."""
+    try:
+        r = requests.get(url, timeout=300)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        raise RuntimeError("result chunk %s download failed (%s)" % (chunk_index, status or type(e).__name__)) from None
+    return r.content.decode("utf-8-sig")
+
+
 def run_sql(client, warehouse_id, sql, timeout_s=1800):
     from databricks.sdk.service.sql import Disposition, Format, StatementState
 
@@ -42,9 +53,7 @@ def run_sql(client, warehouse_id, sql, timeout_s=1800):
     chunk = resp.result
     while chunk is not None:
         for link in chunk.external_links or []:
-            r = requests.get(link.external_link, timeout=300)
-            r.raise_for_status()
-            rows = list(csv.reader(io.StringIO(r.text)))
+            rows = list(csv.reader(io.StringIO(_download(link.external_link, chunk.chunk_index))))
             if rows and [c.lower() for c in rows[0]] == [c.lower() for c in columns]:
                 rows = rows[1:]  # header row present only on some chunks/configs
             records.extend(rows_to_records(columns, rows))

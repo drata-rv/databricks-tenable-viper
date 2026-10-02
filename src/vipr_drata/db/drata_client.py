@@ -6,6 +6,7 @@ dataset (destructive: anything not in the session is hard-deleted), so it only c
 Retry budgets: 429 (rate limit) separate from 5xx/network; other 4xx fail fast.
 """
 import json
+import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -13,6 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 
 MAX_BODY_BYTES = 4 * 1024 * 1024  # Drata max JSON is 5 MB
+RECORD_ERRORS = {400, 413, 422}   # record-specific: isolate the bad record
+MAX_RETRY_AFTER = 120.0           # clamp server-provided waits (seconds)
 
 
 def chunk_records(records, batch_size=100, max_bytes=MAX_BODY_BYTES):
@@ -39,6 +42,7 @@ class DrataClient:
         self.max_rate_limits = max_rate_limits
         self.backoff = backoff
         self._local = threading.local()
+        self._fatal = None  # set on a request-level failure (bad key / ids): stop sending
 
     def _build_session(self):
         s = requests.Session()
@@ -56,9 +60,12 @@ class DrataClient:
     @staticmethod
     def _retry_after(resp, default):
         try:
-            return float(resp.headers.get("Retry-After"))
+            v = float(resp.headers.get("Retry-After"))
         except (TypeError, ValueError):
             return default  # may be an HTTP-date; fall back
+        if not math.isfinite(v) or v < 0:
+            return default
+        return min(v, MAX_RETRY_AFTER)
 
     def _post(self, url, body):
         errors = limits = 0
@@ -83,18 +90,25 @@ class DrataClient:
                     return False, "HTTP %s" % code
                 time.sleep(self.backoff * errors)
             elif code >= 400:
+                if code not in RECORD_ERRORS:
+                    self._fatal = "HTTP %s: %s" % (code, resp.text[:200])  # key/ids/session wrong: not per-record
                 return False, "HTTP %s: %s" % (code, resp.text[:200])
             else:
                 return True, None
 
     def _push_batch(self, url, batch):
+        if self._fatal:
+            return 0, [{"id": r.get("id"), "error": "not sent: " + self._fatal} for r in batch]
         ok, err = self._post(url, {"data": batch})
         if ok:
             return len(batch), []
-        if len(batch) > 1 and err.startswith("HTTP 4"):
+        if len(batch) > 1 and not self._fatal and any(err.startswith("HTTP %d" % c) for c in RECORD_ERRORS):
             # isolate the offending record(s) instead of failing the whole batch
             good, failed = 0, []
             for rec in batch:
+                if self._fatal:
+                    failed.append({"id": rec.get("id"), "error": "not sent: " + self._fatal})
+                    continue
                 g, e = self._post(url, {"data": rec})
                 if g:
                     good += 1
@@ -104,6 +118,7 @@ class DrataClient:
         return 0, [{"id": r.get("id"), "error": err} for r in batch]
 
     def _push_all(self, url, records):
+        self._fatal = None
         ok, failed = 0, []
         batches = list(chunk_records(records, self.batch_size))
         with ThreadPoolExecutor(max_workers=self.workers) as ex:
@@ -117,10 +132,17 @@ class DrataClient:
         return self._push_all(self._base(connection_id, resource_id) + "/records", records)
 
     def replace_via_session(self, connection_id, resource_id, records, session_id):
-        """Atomic snapshot replace. Completes only if every record staged; otherwise cancels."""
+        """Atomic snapshot replace. Completes only if every record staged; otherwise cancels.
+        An empty snapshot is refused (it would hard-delete the whole live dataset)."""
+        if not records:
+            return 0, [{"id": None, "error": "empty snapshot: refusing session replace"}], "skipped"
         base = self._base(connection_id, resource_id)
-        ok, failed = self._push_all("%s/sessions/%s" % (base, session_id), records)
-        action = "complete" if not failed and records else "cancel"
+        try:
+            ok, failed = self._push_all("%s/sessions/%s" % (base, session_id), records)
+        except BaseException:
+            self._post("%s/sessions/%s/actions" % (base, session_id), {"action": "cancel"})
+            raise
+        action = "complete" if not failed else "cancel"
         done, err = self._post("%s/sessions/%s/actions" % (base, session_id), {"action": action})
         if not done:
             failed.append({"id": None, "error": "session %s failed: %s" % (action, err)})

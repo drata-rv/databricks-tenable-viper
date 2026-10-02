@@ -8,3 +8,6 @@ output/
 .databricks/
 local_data/
 .DS_Store
+.claude/
+.env.*
+!.env.example

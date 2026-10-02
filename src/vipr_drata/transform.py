@@ -1,6 +1,6 @@
 """extract_*: business logic (raw -> signals). format_*: pure mapping to Drata JSON."""
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .db.queries import is_true
 
@@ -8,6 +8,7 @@ SEVERITY_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 
 def _parse_map(v):
+    """Databricks CSV renders maps as JSON; also tolerate Spark's '{k -> v, k2 -> v2}' form."""
     if isinstance(v, dict):
         return v
     if not v:
@@ -16,19 +17,24 @@ def _parse_map(v):
         out = json.loads(v)
         return out if isinstance(out, dict) else {}
     except (ValueError, TypeError):
-        return {}
+        pass
+    v = str(v).strip()
+    if v.startswith("{") and v.endswith("}") and "->" in v:
+        pairs = (p.split("->", 1) for p in v[1:-1].split(","))
+        return {k.strip(): val.strip() for k, val in pairs}
+    return {}
 
 
 def _parse_ts(v):
+    """UTC-aware datetime; accepts 'YYYY-MM-DD[ T]HH:MM:SS[.fff][Z|+HH:MM]' and plain dates."""
     if not v:
         return None
-    s = str(v).replace("T", " ").rstrip("Z")
-    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            pass
-    return None
+    s = str(v).strip().replace(" ", "T", 1).replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
 
 
 def _iso(dt):
@@ -38,14 +44,20 @@ def _iso(dt):
 _SEV_ALIASES = {"informational": "info", "none": "info", "moderate": "medium", "important": "high"}
 
 
+_SEV_ALIASES = {"informational": "info", "none": "info", "moderate": "medium", "important": "high"}
+
+
 def _sev(v):
+    """Canonical level or None. Unknown vocab (numeric codes, 'unscored', ...) is undetermined, not ranked."""
     if not v:
         return None
     v = str(v).strip().lower()
-    return _SEV_ALIASES.get(v, v)
+    v = _SEV_ALIASES.get(v, v)
+    return v if v in SEVERITY_ORDER else None
 
 
 def _parse_list(v):
+    """Databricks CSV renders arrays as JSON; also tolerate '[a, b]'."""
     if isinstance(v, list):
         return v
     if not v:
@@ -54,7 +66,15 @@ def _parse_list(v):
         out = json.loads(v)
         return out if isinstance(out, list) else [out]
     except (ValueError, TypeError):
+        v = str(v).strip()
+        if v.startswith("[") and v.endswith("]"):
+            return [x.strip().strip("'\"") for x in v[1:-1].split(",") if x.strip()]
         return [v]
+
+
+def _tri(v):
+    """Tri-state bool: None when the source value is missing (undetermined), never a guess."""
+    return None if v is None or v == "" else is_true(v)
 
 
 def _int(v):
@@ -65,23 +85,27 @@ def _int(v):
 
 
 def scanner_severity(tool_severity, tool="tenable"):
-    """Raw scanner rating from Vipr's per-tool map; None if Tenable didn't report it."""
-    for k, v in _parse_map(tool_severity).items():
-        if tool in k.lower():
-            return _sev(v)
-    return None
+    """Raw scanner rating from Vipr's per-tool map. None if absent, unrecognised, or several
+    matching keys disagree."""
+    vals = {_sev(v) for k, v in _parse_map(tool_severity).items() if tool in k.lower()}
+    return vals.pop() if len(vals) == 1 and None not in vals else None
 
 
 def extract_finding_features(finding, assets, now=None):
     now = now or datetime.now(timezone.utc)
     vipr = _sev(finding.get("severity"))
     scan = scanner_severity(finding.get("tool_severity"))
-    is_open = is_true(finding.get("open"))
+    is_open = _tri(finding.get("open"))
+    has_ticket = _tri(finding.get("has_ticket"))
     sla = _parse_ts(finding.get("sla_date"))
-    if vipr is None or scan is None:
-        changed = None  # undetermined, not guessed
+    closed_at = _parse_ts(finding.get("closed_timestamp"))
+    changed = None if vipr is None or scan is None else vipr != scan  # undetermined, not guessed
+    # SLA: None unless we can actually tell
+    if is_open is None or (finding.get("sla_date") and sla is None):
+        breached = None
     else:
-        changed = vipr != scan
+        breached = bool(is_open and sla and sla < now)
+    closed_late = (closed_at > sla) if (is_open is False and sla and closed_at) else None
     # one asset expected per silk_id; anything else -> unresolved, not arbitrary
     asset = assets[0] if len(assets) == 1 else None
     return {
@@ -93,17 +117,18 @@ def extract_finding_features(finding, assets, now=None):
         "severity_changed": changed,
         "severity_direction": (
             None if not changed else
-            ("downgraded" if SEVERITY_ORDER.get(vipr, 0) < SEVERITY_ORDER.get(scan, 0) else "upgraded")
+            ("downgraded" if SEVERITY_ORDER[vipr] < SEVERITY_ORDER[scan] else "upgraded")
         ),
         "open": is_open,
         "ignored": is_true(finding.get("is_ignored")),
-        "has_ticket": is_true(finding.get("has_ticket")),
-        "missing_ticket": is_open and not is_true(finding.get("has_ticket")),
+        "has_ticket": has_ticket,
+        "missing_ticket": None if has_ticket is None or is_open is None else (is_open and not has_ticket),
         "sla_date": _iso(sla),
-        "sla_breached": bool(is_open and sla and sla < now),
+        "sla_breached": breached,
+        "closed_after_sla": closed_late,
         "first_seen": _iso(_parse_ts(finding.get("first_seen"))),
         "last_seen": _iso(_parse_ts(finding.get("last_seen"))),
-        "closed_at": _iso(_parse_ts(finding.get("closed_timestamp"))),
+        "closed_at": _iso(closed_at),
         "cves": _parse_list(finding.get("open_cves")),
         "asset_silk_id": finding.get("asset_silk_id"),
         "asset_resolved": asset is not None,
@@ -111,39 +136,78 @@ def extract_finding_features(finding, assets, now=None):
     }
 
 
+GENERIC_HOSTNAMES = {"localhost", "localhost.localdomain", "ubuntu", "debian", "centos", "default",
+                     "unknown", "host", "server", "windows", "linux", "android", "iphone"}
+
+
+def _norm_mac(m):
+    return "".join(ch for ch in str(m).lower() if ch in "0123456789abcdef")
+
+
 def index_tenable_assets(tenable_assets):
-    """Lowercased MAC / hostname / FQDN -> set of Tenable asset ids, plus id -> row."""
-    keys, rows = {}, {}
+    """-> {"mac": {norm: ids}, "host": {name: ids}, "rows": {id: row}, "dup": ids with >1 row,
+    "claims": {tenable_id: n Vipr assets claiming it} (filled by claim())}."""
+    idx = {"mac": {}, "host": {}, "rows": {}, "dup": set(), "claims": {}}
     for t in tenable_assets or []:
         tid = t.get("id")
         if not tid:
             continue
-        rows[tid] = t
-        for field in ("mac_addresses", "hostnames", "fqdns"):
+        if tid in idx["rows"]:
+            idx["dup"].add(tid)  # same id twice in latest batch: undetermined, not last-row-wins
+        idx["rows"][tid] = t
+        for v in _parse_list(t.get("mac_addresses")):
+            if _norm_mac(v):
+                idx["mac"].setdefault(_norm_mac(v), set()).add(tid)
+        for field in ("hostnames", "fqdns"):
             for v in _parse_list(t.get(field)):
-                if v:
-                    keys.setdefault((field == "mac_addresses", str(v).strip().lower()), set()).add(tid)
-    return keys, rows
+                v = str(v).strip().lower()
+                if v and v not in GENERIC_HOSTNAMES:
+                    idx["host"].setdefault(v, set()).add(tid)
+    return idx
 
 
-def match_tenable(asset, tenable_index):
-    """-> (status, tenable_row). Exact MAC then exact hostname; exactly one candidate or undetermined."""
-    if tenable_index is None:
+def _candidates(asset, idx):
+    macs, hosts = set(), set()
+    for v in _parse_list(asset.get("mac_addresses")):
+        macs |= idx["mac"].get(_norm_mac(v), set())
+    for v in _parse_list(asset.get("hostnames")):
+        hosts |= idx["host"].get(str(v).strip().lower(), set())
+    return macs, hosts
+
+
+def claim_tenable(assets, idx):
+    """Count how many Vipr assets point at each Tenable asset (a shared target is ambiguous)."""
+    for a in assets:
+        macs, hosts = _candidates(a, idx)
+        for tid in (macs or hosts):
+            idx["claims"][tid] = idx["claims"].get(tid, 0) + 1
+
+
+def match_tenable(asset, idx):
+    """-> (status, tenable_row). status: matched | none | ambiguous | not_configured | no_data.
+    Exact normalised MAC and/or exact non-generic hostname. Only a single, unconflicted,
+    uniquely-claimed Tenable asset is 'matched'; anything else is undetermined."""
+    if idx is None:
         return "not_configured", None
-    keys, rows = tenable_index
-    for is_mac, field in ((True, "mac_addresses"), (False, "hostnames")):
-        cands = set()
-        for v in _parse_list(asset.get(field)):
-            cands |= keys.get((is_mac, str(v).strip().lower()), set())
-        if len(cands) == 1:
-            return "matched", rows[next(iter(cands))]
-        if len(cands) > 1:
-            return "ambiguous", None
-    return "none", None
+    if not idx["rows"]:
+        return "no_data", None  # configured but empty latest batch: not evidence of 'unscanned'
+    macs, hosts = _candidates(asset, idx)
+    if macs and hosts and macs != hosts and not (macs & hosts):
+        return "ambiguous", None  # MAC and hostname disagree
+    cands = macs or hosts
+    if not cands:
+        return "none", None
+    if len(cands) > 1:
+        return "ambiguous", None
+    tid = next(iter(cands))
+    if tid in idx["dup"] or idx["claims"].get(tid, 0) > 1:
+        return "ambiguous", None
+    return "matched", idx["rows"][tid]
 
 
 def extract_asset_features(asset, stale_days=7, now=None, tenable_index=None):
     now = now or datetime.now(timezone.utc)
+    limit = timedelta(days=stale_days)
     seen = _parse_ts(asset.get("last_seen"))
     days = (now - seen).days if seen else None
     status, trow = match_tenable(asset, tenable_index)
@@ -153,7 +217,7 @@ def extract_asset_features(asset, stale_days=7, now=None, tenable_index=None):
         "tenable_match": status,
         "tenable_last_scan": _iso(t_scan),
         "tenable_days_since_scan": t_days,
-        "tenable_scan_stale": None if t_days is None else t_days > stale_days,
+        "tenable_scan_stale": None if t_scan is None else (now - t_scan) > limit,
         "tenable_last_auth_scan": _iso(_parse_ts(trow.get("last_authenticated_scan_date"))) if trow else None,
         "id": asset.get("silk_id"),
         "name": asset.get("name"),
@@ -161,7 +225,7 @@ def extract_asset_features(asset, stale_days=7, now=None, tenable_index=None):
         "is_active": is_true(asset.get("is_active")),
         "last_seen": _iso(seen),
         "days_since_seen": days,
-        "scan_stale": None if days is None else days > stale_days,  # None = undetermined
+        "vipr_last_seen_stale": None if seen is None else (now - seen) > limit,  # NOT scanner activity; None = undetermined
         "open_findings_count": _int(asset.get("open_findings_count")),
     }
 
@@ -174,7 +238,7 @@ def format_finding_for_drata(f):
         "severityChanged": f["severity_changed"], "severityDirection": f["severity_direction"],
         "open": f["open"], "ignored": f["ignored"], "hasTicket": f["has_ticket"],
         "missingTicket": f["missing_ticket"], "slaDate": f["sla_date"],
-        "slaBreached": f["sla_breached"], "firstSeen": f["first_seen"],
+        "slaBreached": f["sla_breached"], "closedAfterSla": f["closed_after_sla"], "firstSeen": f["first_seen"],
         "lastSeen": f["last_seen"], "closedAt": f["closed_at"], "cves": f["cves"],
         "assetId": f["asset_silk_id"], "assetName": f["asset_name"],
     }
@@ -185,7 +249,7 @@ def format_asset_for_drata(a):
         "id": a["id"], "displayName": a["name"] or a["id"], "name": a["name"],
         "assetType": a["asset_type"],
         "isActive": a["is_active"], "lastSeen": a["last_seen"],
-        "daysSinceSeen": a["days_since_seen"], "scanStale": a["scan_stale"],
+        "daysSinceSeen": a["days_since_seen"], "viprLastSeenStale": a["vipr_last_seen_stale"],
         "openFindingsCount": a["open_findings_count"],
         "tenableMatch": a["tenable_match"], "tenableLastScan": a["tenable_last_scan"],
         "tenableDaysSinceScan": a["tenable_days_since_scan"], "tenableScanStale": a["tenable_scan_stale"],
@@ -194,22 +258,24 @@ def format_asset_for_drata(a):
 
 
 def _split_duplicates(rows, key, label, rejected):
-    """Ids appearing more than once in the latest batch are rejected, never last-write-wins."""
-    counts = {}
+    """Byte-identical repeats of an id (e.g. a re-loaded file) collapse to one row; ids with
+    conflicting rows are rejected in full, never last-write-wins."""
+    groups = {}
     for r in rows:
-        counts[key(r)] = counts.get(key(r), 0) + 1
+        groups.setdefault(key(r), []).append(r)
     keep = []
-    for r in rows:
-        if key(r) and counts[key(r)] > 1:
-            rejected.append({"reason": "duplicate %s id in latest batch" % label, "record": r})
+    for k, grp in groups.items():
+        distinct = {json.dumps(g, sort_keys=True, default=str) for g in grp}
+        if not k or len(distinct) == 1:
+            keep.append(grp[0]) if k else keep.extend(grp)
         else:
-            keep.append(r)
+            rejected.extend({"resource": label + "s", "reason": "conflicting duplicate %s id in latest batch" % label, "record": g} for g in grp)
     return keep
 
 
 def build_payloads(joined, assets, stale_days=7, now=None, tenable_assets=None):
-    """Returns (findings, asset_records, rejected). Records w/o a stable id, or with a duplicated
-    id, are rejected (and logged by the caller), not dropped or arbitrarily picked."""
+    """Returns (findings, asset_records, rejected). Records w/o a stable id, or with conflicting
+    duplicate ids, are rejected (and logged by the caller), not dropped or arbitrarily picked."""
     rejected = []
     joined = _split_duplicates(joined, lambda j: j["finding"].get("silk_id"), "finding", rejected)
     assets = _split_duplicates(assets, lambda a: a.get("silk_id"), "asset", rejected)
@@ -217,15 +283,17 @@ def build_payloads(joined, assets, stale_days=7, now=None, tenable_assets=None):
     for j in joined:
         feat = extract_finding_features(j["finding"], j["assets"], now)
         if not feat["id"]:
-            rejected.append({"reason": "missing silk_id", "record": j["finding"]})
+            rejected.append({"resource": "findings", "reason": "missing silk_id", "record": j["finding"]})
         else:
             findings.append(format_finding_for_drata(feat))
     scans = []
     tindex = index_tenable_assets(tenable_assets) if tenable_assets is not None else None
+    if tindex is not None:
+        claim_tenable([a for a in assets if a.get("silk_id")], tindex)
     for a in assets:
         feat = extract_asset_features(a, stale_days, now, tindex)
         if not feat["id"]:
-            rejected.append({"reason": "asset missing silk_id", "record": a})
+            rejected.append({"resource": "assets", "reason": "missing silk_id", "record": a})
         else:
             scans.append(format_asset_for_drata(feat))
     return findings, scans, rejected

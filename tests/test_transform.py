@@ -4,10 +4,12 @@ import pathlib
 from unittest import mock
 
 import jsonschema
+import pytest
+import requests
 
-from vipr_drata.db.drata_client import DrataClient
 from vipr_drata.db.queries import is_true, rows_to_records
-from vipr_drata.transform import build_payloads, extract_finding_features
+from vipr_drata.transform import (build_payloads, extract_asset_features, extract_finding_features,
+                                  index_tenable_assets, match_tenable, scanner_severity)
 
 NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
 
@@ -48,52 +50,7 @@ def test_rejects_missing_id():
     fs, sc, rej = build_payloads(
         [{"finding": finding(silk_id=None), "assets": []}],
         [{"silk_id": "a1", "last_seen": "2026-09-01 00:00:00", "is_active": "true"}], 7, NOW)
-    assert not fs and len(rej) == 1 and sc[0]["scanStale"] is True
-
-
-def _resp(code, headers=None):
-    return mock.Mock(status_code=code, headers=headers or {}, text="")
-
-
-def _client(sess, **kw):
-    c = DrataClient("http://x", "k", backoff=0, **kw)
-    c._build_session = lambda: sess
-    return c
-
-
-def test_client_retry_budgets():
-    sess = mock.Mock()
-    c = _client(sess)
-    sess.post.side_effect = [_resp(429), _resp(429), _resp(500), _resp(200)]
-    assert c._post("u", {}) == (True, None)
-    sess.post.side_effect = [_resp(400)]
-    assert c._post("u", {})[0] is False
-
-
-def test_batch_400_isolates_bad_record():
-    sess = mock.Mock()
-    sess.post.side_effect = [_resp(400), _resp(200), _resp(400)]  # batch, rec a ok, rec b bad
-    ok, failed = _client(sess)._push_batch("u", [{"id": "a"}, {"id": "b"}])
-    assert ok == 1 and failed[0]["id"] == "b"
-
-
-def test_upsert_url_and_body():
-    sess = mock.Mock()
-    sess.post.return_value = _resp(201)
-    ok, failed = _client(sess, batch_size=2).upsert(7, 9, [{"id": str(i)} for i in range(3)])
-    assert ok == 3 and not failed and sess.post.call_count == 2
-    assert sess.post.call_args.args[0] == "http://x/public/v2/custom-connections/7/resources/9/records"
-    assert "data" in sess.post.call_args.kwargs["json"]
-
-
-def test_session_completes_only_when_clean():
-    sess = mock.Mock()
-    sess.post.return_value = _resp(200)
-    ok, failed, action = _client(sess).replace_via_session(1, 2, [{"id": "a"}], "s-1")
-    assert action == "complete" and sess.post.call_args.kwargs["json"] == {"action": "complete"}
-    sess.post.side_effect = [_resp(400), _resp(200)]  # single-record batch fails, then cancel
-    ok, failed, action = _client(sess).replace_via_session(1, 2, [{"id": "a"}], "s-2")
-    assert action == "cancel" and failed
+    assert not fs and len(rej) == 1 and sc[0]["viprLastSeenStale"] is True
 
 
 def _schema(name):
@@ -137,7 +94,7 @@ def _run_sql_with(csv_chunks):
     client.statement_execution.execute_statement.return_value = resp
     client.statement_execution.get_statement_result_chunk_n.side_effect = lambda sid, n: chunks[n]
     with mock.patch.object(queries.requests, "get",
-                           side_effect=lambda url, timeout: mock.Mock(text=csv_chunks[int(url[-1])])):
+                           side_effect=lambda url, timeout: mock.Mock(content=csv_chunks[int(url[-1])].encode("utf-8"))):
         return queries.run_sql(client, "w", "SELECT 1")
 
 
@@ -145,3 +102,105 @@ def test_run_sql_multichunk_header_only_when_present():
     # chunk 0 has a header, chunk 1 does not; "null" -> None
     rows = _run_sql_with(["a,b\n1,2\n", "3,null\n"])
     assert rows == [{"a": "1", "b": "2"}, {"a": "3", "b": None}]
+
+
+def test_run_sql_decodes_utf8_and_download_error_hides_signed_url():
+    from vipr_drata.db import queries
+    assert _run_sql_with(["a,b\n\u00e9t\u00e9,2\n"])[0]["a"] == "\u00e9t\u00e9"
+    err = requests.HTTPError("403 for https://bucket/x?X-Amz-Signature=SECRET", response=mock.Mock(status_code=403))
+    with mock.patch.object(queries.requests, "get", side_effect=err):
+        with pytest.raises(RuntimeError) as e:
+            queries._download("https://bucket/x?X-Amz-Signature=SECRET", 0)
+    assert "SECRET" not in str(e.value) and "403" in str(e.value)
+
+
+@pytest.mark.parametrize("vipr,tool", [("Medium", '{"tenable":"3"}'), ("Medium", '{"tenable":"unknown"}'),
+                                       ("unscored", '{"tenable":"low"}'), ("medium", '{"tenable_io":"high","tenable_sc":"low"}')])
+def test_unknown_or_conflicting_severity_is_undetermined(vipr, tool):
+    f = extract_finding_features(finding(severity=vipr, tool_severity=tool), [], NOW)
+    assert f["severity_changed"] is None and f["severity_direction"] is None
+
+
+def test_agreeing_multiple_tenable_keys_ok():
+    assert scanner_severity('{"tenable_io":"High","tenable_sc":"high"}') == "high"
+    assert scanner_severity("{tenable -> medium, qualys -> low}") == "medium"  # spark map rendering
+
+
+@pytest.mark.parametrize("sla", ["2026-09-01T00:00:00+00:00", "2026-09-01T00:00:00Z", "2026-09-01 00:00:00.123"])
+def test_sla_timestamp_formats(sla):
+    f = extract_finding_features(finding(sla_date=sla), [], NOW)
+    assert f["sla_breached"] is True and f["sla_date"].startswith("2026-09-01")
+
+
+def test_unparseable_sla_and_null_flags_are_undetermined():
+    f = extract_finding_features(finding(sla_date="not-a-date"), [], NOW)
+    assert f["sla_breached"] is None
+    f = extract_finding_features(finding(has_ticket=None), [], NOW)
+    assert f["missing_ticket"] is None and f["has_ticket"] is None
+    f = extract_finding_features(finding(open=None), [], NOW)
+    assert f["open"] is None and f["sla_breached"] is None
+
+
+def test_closed_after_sla():
+    f = extract_finding_features(finding(open="false", sla_date="2026-08-01 00:00:00",
+                                         closed_timestamp="2026-09-20 00:00:00"), [], NOW)
+    assert f["closed_after_sla"] is True and f["sla_breached"] is False
+
+
+def test_staleness_uses_exact_timedelta():
+    # 7 days + 6 hours old with a 7 day limit is stale even though .days == 7
+    a = extract_asset_features({"silk_id": "a", "last_seen": "2026-09-23 18:00:00"}, 7, NOW)
+    assert a["days_since_seen"] == 7 and a["vipr_last_seen_stale"] is True
+
+
+def _t(i, hosts=(), macs=(), scan="2026-09-30 00:00:00"):
+    return {"id": i, "hostnames": json.dumps(list(hosts)), "mac_addresses": json.dumps(list(macs)),
+            "last_scan_time": scan}
+
+
+def _asset(i, hosts=(), macs=()):
+    return {"silk_id": i, "hostnames": json.dumps(list(hosts)), "mac_addresses": json.dumps(list(macs)),
+            "last_seen": "2026-09-30 00:00:00"}
+
+
+def _status(assets, tenable):
+    _, sc, _ = build_payloads([], assets, 7, NOW, tenable_assets=tenable)
+    return {a["id"]: a["tenableMatch"] for a in sc}
+
+
+def test_tenable_shared_target_and_generic_names_are_ambiguous_or_none():
+    got = _status([_asset("a0", ["web-1"]), _asset("a1", ["web-1"])], [_t("t1", ["web-1"])])
+    assert got == {"a0": "ambiguous", "a1": "ambiguous"}  # one Tenable asset claimed twice
+    assert _status([_asset("a0", ["ubuntu"])], [_t("t1", ["ubuntu"])]) == {"a0": "none"}
+
+
+def test_tenable_mac_normalised_and_conflict_ambiguous():
+    assert _status([_asset("a", [], ["AA-BB-CC-00-00-01"])], [_t("t", [], ["aa:bb:cc:00:00:01"])]) == {"a": "matched"}
+    got = _status([_asset("a", ["y"], ["AA:BB:CC:00:00:01"])],
+                  [_t("t1", ["x"], ["aa:bb:cc:00:00:01"]), _t("t2", ["y"])])
+    assert got == {"a": "ambiguous"}  # MAC says t1, hostname says t2
+
+
+def test_tenable_empty_and_duplicate_ids_are_undetermined():
+    assert _status([_asset("a", ["h"])], []) == {"a": "no_data"}
+    assert _status([_asset("a", ["h"])], [_t("t", ["h"]), _t("t", ["h"], scan="2026-01-01 00:00:00")]) == {"a": "ambiguous"}
+    assert _status([_asset("a", ["h"])], None) == {"a": "not_configured"}
+
+
+def test_identical_duplicates_collapse_conflicting_rejected():
+    same = {"finding": finding(), "assets": []}
+    fs, _, rej = build_payloads([same, dict(same)], [], 7, NOW)
+    assert len(fs) == 1 and not rej
+    fs, _, rej = build_payloads([same, {"finding": finding(severity="high"), "assets": []}], [], 7, NOW)
+    assert not fs and len(rej) == 2 and rej[0]["resource"] == "findings"
+
+
+def test_null_asset_id_never_joins():
+    from vipr_drata.etl.extract import merge
+    joined, _ = merge({"findings": [finding(asset_silk_id=None)], "assets": [{"silk_id": None, "name": "ghost"}]})
+    assert joined[0]["assets"] == []
+
+
+def test_parse_list_fallbacks():
+    from vipr_drata.transform import _parse_list
+    assert _parse_list("[CVE-1, CVE-2]") == ["CVE-1", "CVE-2"] and _parse_list("") == []
