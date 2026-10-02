@@ -18,7 +18,8 @@ vipr-drata --dry-run                  # real Databricks, no push
 vipr-drata                            # push (sandbox unless --drata-prod)
 vipr-drata --push-mode session        # atomic replace; default is upsert
 ```
-Output in `./output`: `records.json`, `_rejected.json` (`_failed.json` on push errors).
+Output in `./output`: `records.json`, `_rejected.json`, `_profile.json` (`_failed.json` on push errors).
+`_profile.json` explains null fields: `tool_severity` keys/values seen, asset join outcomes, per-column null counts.
 
 ## Drata
 1. Create one CUSTOM connection with `schemas/vipr_unified.schema.json`, display name key `displayName`.

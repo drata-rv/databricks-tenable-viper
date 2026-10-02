@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 from .db.queries import is_true
@@ -6,32 +7,40 @@ from .db.queries import is_true
 SEVERITY_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 
-def _parse_map(v):
+_SPARK_PAIR = re.compile(r"([^,{}]+?)\s*->\s*([^,}]*)")
+
+
+def parse_map(v):
     if isinstance(v, dict):
         return v
-    if not v:
+    if v is None or v == "":
         return {}
     try:
         out = json.loads(v)
-        return out if isinstance(out, dict) else {}
     except (ValueError, TypeError):
-        pass
-    v = str(v).strip()
-    if v.startswith("{") and v.endswith("}") and "->" in v:
-        pairs = (p.split("->", 1) for p in v[1:-1].split(","))
-        return {k.strip(): val.strip() for k, val in pairs}
-    return {}
+        s = str(v).strip()
+        pairs = _SPARK_PAIR.findall(s) if s.startswith("{") and s.endswith("}") else []
+        return {k.strip(): val.strip() for k, val in pairs} or None
+    return out if isinstance(out, dict) else None
+
+
+def _parse_map(v):
+    return parse_map(v) or {}
 
 
 def _parse_ts(v):
-    if not v:
+    s = "" if v is None else str(v).strip()
+    if not s:
         return None
-    s = str(v).strip().replace(" ", "T", 1).replace("Z", "+00:00")
     try:
+        if s.isdigit() and len(s) in (10, 13):
+            return datetime.fromtimestamp(int(s) / (1000 if len(s) == 13 else 1), tz=timezone.utc)
+        s = re.sub(r"\s*UTC$", "+00:00", s, flags=re.I).replace(" ", "T", 1).replace("Z", "+00:00")
+        s = re.sub(r"\.(\d+)", lambda m: "." + m.group(1).ljust(6, "0")[:6], s, count=1)
         dt = datetime.fromisoformat(s)
-    except ValueError:
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+    except (ValueError, OverflowError, OSError):
         return None
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
 
 
 def _iso(dt):
@@ -111,7 +120,7 @@ def extract_finding_features(finding, assets, now=None):
             ("downgraded" if SEVERITY_ORDER[vipr] < SEVERITY_ORDER[scan] else "upgraded")
         ),
         "open": is_open,
-        "ignored": is_true(finding.get("is_ignored")),
+        "ignored": _tri(finding.get("is_ignored")),
         "has_ticket": has_ticket,
         "missing_ticket": None if has_ticket is None or is_open is None else (is_open and not has_ticket),
         "sla_date": _iso(sla),
@@ -209,7 +218,7 @@ def extract_asset_features(asset, stale_days=7, now=None, tenable_index=None):
         "id": asset.get("silk_id"),
         "name": asset.get("name"),
         "asset_type": asset.get("asset_type"),
-        "is_active": is_true(asset.get("is_active")),
+        "is_active": _tri(asset.get("is_active")),
         "last_seen": _iso(seen),
         "days_since_seen": days,
         # Vipr last_seen is not scanner activity
@@ -245,6 +254,16 @@ def format_asset_for_drata(a):
         "tenableDaysSinceScan": a["tenable_days_since_scan"], "tenableScanStale": a["tenable_scan_stale"],
         "tenableLastAuthenticatedScan": a["tenable_last_auth_scan"],
     }
+
+
+def collapse_identical(rows):
+    seen, out = set(), []
+    for r in rows:
+        k = json.dumps(r, sort_keys=True, default=str)
+        if k not in seen:
+            seen.add(k)
+            out.append(r)
+    return out
 
 
 def _split_duplicates(rows, key, label, rejected):

@@ -3,6 +3,7 @@ from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 
 from ..db.queries import latest_batch_clause, run_sql
+from ..transform import collapse_identical
 
 TableSpec = namedtuple("TableSpec", "label env_var key required columns")
 
@@ -46,6 +47,7 @@ def merge(tables):
         # null ids never join
         if a.get("silk_id"):
             assets.setdefault(a["silk_id"], []).append(a)
+    assets = {k: collapse_identical(v) for k, v in assets.items()}
     return [
         {"finding": f, "assets": assets.get(f.get("asset_silk_id"), []) if f.get("asset_silk_id") else []}
         for f in tables.get("findings", [])

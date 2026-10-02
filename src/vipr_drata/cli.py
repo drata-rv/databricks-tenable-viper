@@ -11,6 +11,7 @@ from .db.queries import is_true
 from .etl.extract import extract_all, merge
 from .etl.local import load_local_tables
 from .etl.sample_data import write_sample_data
+from .profile import build_profile, summary
 from .transform import build_payloads
 
 
@@ -127,6 +128,12 @@ def main(argv=None):
     state.update(records=records, rejected=rejected)
 
     _dump(os.path.join(args.output_dir, "records.json"), records)
+    try:
+        profile = build_profile(tables, joined, records)
+        _dump(os.path.join(args.output_dir, "_profile.json"), profile)
+        print(summary(profile))
+    except Exception as e:
+        print("profile skipped: %s" % type(e).__name__, file=sys.stderr)
     _dump(os.path.join(args.output_dir, "_rejected.json"), rejected)
     print("findings=%d assets=%d rejected=%d" % (len(findings), len(scans), len(rejected)))
     if rejected:
