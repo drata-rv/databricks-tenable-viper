@@ -1,0 +1,87 @@
+bundle:
+  name: vipr-drata
+
+variables:
+  secret_scope:
+    default: vipr-drata-test
+  warehouse_id:
+    default: ""
+  findings_table:
+    default: si_test_catalog.nw_harmonized_sensitive.t_vipr_all_findings
+  assets_table:
+    default: si_test_catalog.nw_harmonized_sensitive.t_vipr_all_assets
+  workspace_name:
+    default: test
+  drata_prod:
+    default: "false"
+
+artifacts:
+  vipr_drata:
+    type: whl
+    build: python -m build --wheel
+    path: .
+
+resources:
+  jobs:
+    vipr_drata_sync:
+      name: vipr-drata-sync-${bundle.target}
+      tasks:
+        - task_key: sync
+          environment_key: default
+          python_wheel_task:
+            package_name: vipr_drata
+            entry_point: vipr-drata
+            parameters:
+              - --workspace
+              - ${var.workspace_name}
+              - --warehouse-id
+              - ${var.warehouse_id}
+              - --env
+              - DATABRICKS_SECRET_SCOPE_TEST=${var.secret_scope}
+              - --env
+              - DATABRICKS_SECRET_SCOPE_PROD=${var.secret_scope}
+              - --env
+              - VIPR_FINDINGS_TABLE=${var.findings_table}
+              - --env
+              - VIPR_ASSETS_TABLE=${var.assets_table}
+              - --env
+              - DRATA_PROD=${var.drata_prod}
+      environments:
+        - environment_key: default
+          spec:
+            client: "2"
+            dependencies:
+              - ./dist/*.whl
+      # schedule:
+      #   quartz_cron_expression: "0 0 2 * * ?"
+      #   timezone_id: UTC
+      #   pause_status: PAUSED
+
+    smoke_test:
+      name: vipr-drata-smoke-${bundle.target}
+      tasks:
+        - task_key: smoke
+          spark_python_task:
+            python_file: ./resources/smoke.py
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            client: "2"
+
+targets:
+  test:
+    default: true
+    mode: development
+  prod:
+    mode: production
+    workspace:
+      root_path: /Shared/vipr-drata
+    variables:
+      secret_scope: vipr-drata-prod
+      workspace_name: prod
+      drata_prod: "true"
+      findings_table: si_prod_catalog.nw_harmonized_sensitive.t_vipr_all_findings
+      assets_table: si_prod_catalog.nw_harmonized_sensitive.t_vipr_all_assets
+    # run_as:
+    #   service_principal_name: <application-id-uuid>
