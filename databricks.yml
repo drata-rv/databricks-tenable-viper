@@ -14,6 +14,16 @@ variables:
     default: test
   drata_prod:
     default: "false"
+  findings_connection_id:
+    default: ""
+  findings_resource_id:
+    default: ""
+  assets_connection_id:
+    default: ""
+  assets_resource_id:
+    default: ""
+  push_mode:
+    default: upsert
 
 artifacts:
   vipr_drata:
@@ -46,6 +56,16 @@ resources:
               - VIPR_ASSETS_TABLE=${var.assets_table}
               - --env
               - DRATA_PROD=${var.drata_prod}
+              - --env
+              - DRATA_PUSH_MODE=${var.push_mode}
+              - --env
+              - DRATA_FINDINGS_CONNECTION_ID=${var.findings_connection_id}
+              - --env
+              - DRATA_FINDINGS_RESOURCE_ID=${var.findings_resource_id}
+              - --env
+              - DRATA_ASSETS_CONNECTION_ID=${var.assets_connection_id}
+              - --env
+              - DRATA_ASSETS_RESOURCE_ID=${var.assets_resource_id}
       environments:
         - environment_key: default
           spec:

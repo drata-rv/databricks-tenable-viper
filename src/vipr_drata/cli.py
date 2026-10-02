@@ -4,6 +4,7 @@ import atexit
 import json
 import os
 import sys
+from datetime import datetime, timezone
 
 
 def _apply_cli_env_overrides():
@@ -48,11 +49,19 @@ def main(argv=None):
     p.add_argument("--stale-days", type=int, default=int(os.getenv("SCAN_STALE_DAYS", "7")))
     p.add_argument("--drata-prod", action="store_true", default=os.getenv("DRATA_PROD", "false").lower() == "true",
                    help="push to Drata prod tenant (separate credentials, no sandbox fallback)")
+    p.add_argument("--push-mode", choices=["upsert", "session"], default=os.getenv("DRATA_PUSH_MODE", "upsert"),
+                   help="upsert: never deletes. session: atomic snapshot replace (hard-deletes records not in this run)")
     p.add_argument("--dry-run", action="store_true", help="extract+transform only, no push")
     p.add_argument("--env", action="append", help="KEY=VALUE applied to environment (job params)")
     args = p.parse_args(argv)
     if not args.warehouse_id:
         p.error("warehouse id required (--warehouse-id or DATABRICKS_WAREHOUSE_ID)")
+
+    if not args.dry_run:
+        missing = [k for n in ("FINDINGS", "ASSETS") for k in ("DRATA_%s_CONNECTION_ID" % n, "DRATA_%s_RESOURCE_ID" % n)
+                   if not os.getenv(k)]
+        if missing:
+            p.error("missing Drata config: " + ", ".join(missing))
 
     state = {}
     atexit.register(lambda: state and _dump(os.path.join(args.output_dir, "partial.json"), state)
@@ -73,19 +82,21 @@ def main(argv=None):
     if args.dry_run:
         state["incomplete"] = False
         return 0
-    dc = DrataClient(
-        os.getenv("DRATA_API_BASE", "https://public-api.drata.com"),
-        drata_api_key(args.drata_prod),
-        os.environ["DRATA_CONNECTION_ID"],
-        os.getenv("DRATA_PUSH_PATH", "/public/v1/custom-connections/{connection_id}/resources/{resource}/records"),
-    )
+    dc = DrataClient(os.getenv("DRATA_API_BASE", "https://public-api.drata.com"), drata_api_key(args.drata_prod))
+    session_id = "vipr-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     failed_total = 0
-    for resource, recs in (("vulnerability_findings", findings), ("asset_scan_coverage", scans)):
-        ok, failed = dc.push_all(resource, recs)
+    for name, recs in (("FINDINGS", findings), ("ASSETS", scans)):
+        conn = os.environ["DRATA_%s_CONNECTION_ID" % name]
+        res = os.environ["DRATA_%s_RESOURCE_ID" % name]
+        if args.push_mode == "session":
+            ok, failed, action = dc.replace_via_session(conn, res, recs, session_id)
+            print("%s session=%s pushed=%d failed=%d -> %s" % (name, session_id, ok, len(failed), action))
+        else:
+            ok, failed = dc.upsert(conn, res, recs)
+            print("%s upsert pushed=%d failed=%d" % (name, ok, len(failed)))
         failed_total += len(failed)
-        print("%s pushed=%d failed=%d" % (resource, ok, len(failed)))
         if failed:
-            _dump(os.path.join(args.output_dir, "_failed_%s.json" % resource), failed)
+            _dump(os.path.join(args.output_dir, "_failed_%s.json" % name.lower()), failed)
     state["incomplete"] = False
     return 1 if failed_total else 0
 

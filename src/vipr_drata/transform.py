@@ -104,7 +104,8 @@ def extract_asset_features(asset, stale_days=7, now=None):
 
 def format_finding_for_drata(f):
     return {
-        "externalId": f["id"], "displayId": f["display_id"], "name": f["name"],
+        "id": f["id"], "displayName": f["name"] or f["display_id"] or f["id"],
+        "displayId": f["display_id"], "name": f["name"],
         "viprSeverity": f["vipr_severity"], "scannerSeverity": f["scanner_severity"],
         "severityChanged": f["severity_changed"], "severityDirection": f["severity_direction"],
         "open": f["open"], "ignored": f["ignored"], "hasTicket": f["has_ticket"],
@@ -117,7 +118,8 @@ def format_finding_for_drata(f):
 
 def format_asset_for_drata(a):
     return {
-        "externalId": a["id"], "name": a["name"], "assetType": a["asset_type"],
+        "id": a["id"], "displayName": a["name"] or a["id"], "name": a["name"],
+        "assetType": a["asset_type"],
         "isActive": a["is_active"], "lastSeen": a["last_seen"],
         "daysSinceSeen": a["days_since_seen"], "scanStale": a["scan_stale"],
         "openFindingsCount": a["open_findings_count"],

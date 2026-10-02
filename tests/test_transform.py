@@ -47,12 +47,46 @@ def test_rejects_missing_id():
     assert not fs and len(rej) == 1 and sc[0]["scanStale"] is True
 
 
-def test_client_retry_budgets():
-    c = DrataClient("http://x", "k", "c", "/{connection_id}/{resource}", backoff=0)
-    resp = lambda code: mock.Mock(status_code=code, headers={}, text="")
-    sess = mock.Mock()
-    sess.put.side_effect = [resp(429), resp(429), resp(500), resp(200)]
+def _resp(code, headers=None):
+    return mock.Mock(status_code=code, headers=headers or {}, text="")
+
+
+def _client(sess, **kw):
+    c = DrataClient("http://x", "k", backoff=0, **kw)
     c._build_session = lambda: sess
-    assert c.push_one("r", {}) == (True, None)
-    sess.put.side_effect = [resp(400)]
-    assert c.push_one("r", {})[0] is False
+    return c
+
+
+def test_client_retry_budgets():
+    sess = mock.Mock()
+    c = _client(sess)
+    sess.post.side_effect = [_resp(429), _resp(429), _resp(500), _resp(200)]
+    assert c._post("u", {}) == (True, None)
+    sess.post.side_effect = [_resp(400)]
+    assert c._post("u", {})[0] is False
+
+
+def test_batch_400_isolates_bad_record():
+    sess = mock.Mock()
+    sess.post.side_effect = [_resp(400), _resp(200), _resp(400)]  # batch, rec a ok, rec b bad
+    ok, failed = _client(sess)._push_batch("u", [{"id": "a"}, {"id": "b"}])
+    assert ok == 1 and failed[0]["id"] == "b"
+
+
+def test_upsert_url_and_body():
+    sess = mock.Mock()
+    sess.post.return_value = _resp(201)
+    ok, failed = _client(sess, batch_size=2).upsert(7, 9, [{"id": str(i)} for i in range(3)])
+    assert ok == 3 and not failed and sess.post.call_count == 2
+    assert sess.post.call_args.args[0] == "http://x/public/v2/custom-connections/7/resources/9/records"
+    assert "data" in sess.post.call_args.kwargs["json"]
+
+
+def test_session_completes_only_when_clean():
+    sess = mock.Mock()
+    sess.post.return_value = _resp(200)
+    ok, failed, action = _client(sess).replace_via_session(1, 2, [{"id": "a"}], "s-1")
+    assert action == "complete" and sess.post.call_args.kwargs["json"] == {"action": "complete"}
+    sess.post.side_effect = [_resp(400), _resp(200)]  # single-record batch fails, then cancel
+    ok, failed, action = _client(sess).replace_via_session(1, 2, [{"id": "a"}], "s-2")
+    assert action == "cancel" and failed
