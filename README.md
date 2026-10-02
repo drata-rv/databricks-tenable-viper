@@ -1,6 +1,6 @@
 # vipr-drata
 
-Databricks Vipr tables -> Drata Custom Connections (findings + asset scan coverage).
+Databricks Vipr tables -> one Drata Custom Connection. Each record has `recordType` `finding` or `asset`; ids are `finding:<silk_id>` / `asset:<silk_id>`.
 
 ## Setup
 ```
@@ -18,12 +18,13 @@ vipr-drata --dry-run                  # real Databricks, no push
 vipr-drata                            # push (sandbox unless --drata-prod)
 vipr-drata --push-mode session        # atomic replace; default is upsert
 ```
-Output in `./output`: `findings.json`, `asset_scan_coverage.json`, `_rejected.json`.
+Output in `./output`: `records.json`, `_rejected.json` (`_failed.json` on push errors).
 
 ## Drata
-1. Create two CUSTOM connections using `schemas/*.schema.json`, display name key `displayName`.
-2. Set `DRATA_{FINDINGS,ASSETS}_{CONNECTION,RESOURCE}_ID` and `DRATA_API_KEY` (create/update scope).
-3. Prod: `DRATA_API_KEY_PROD` and `--drata-prod`.
+1. Create one CUSTOM connection with `schemas/vipr_unified.schema.json`, display name key `displayName`.
+2. Set `DRATA_CONNECTION_ID`, `DRATA_RESOURCE_ID` and `DRATA_API_KEY` (create/update scope).
+3. Filter custom tests on `recordType`.
+4. Prod: `DRATA_API_KEY_PROD` and `--drata-prod`.
 
 ## Databricks
 Set `DATABRICKS_*` and `VIPR_*_TABLE` in `.env`. Optional `TENABLE_ASSETS_TABLE` adds Tenable scan evidence.

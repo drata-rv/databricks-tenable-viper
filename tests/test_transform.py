@@ -53,21 +53,80 @@ def test_rejects_missing_id():
     assert not fs and len(rej) == 1 and sc[0]["viprLastSeenStale"] is True
 
 
-def _schema(name):
-    return json.loads((pathlib.Path(__file__).parent.parent / "schemas" / name).read_text())
+def _schema():
+    return json.loads((pathlib.Path(__file__).parent.parent / "schemas" / "vipr_unified.schema.json").read_text())
 
 
-def test_payloads_match_drata_schemas():
+def _strict():
+    sev = {"enum": ["info", "low", "medium", "high", "critical", None]}
+    s = _schema()
+    s["properties"].update(
+        recordType={"enum": ["finding", "asset"]}, viprSeverity=sev, scannerSeverity=sev,
+        severityDirection={"enum": ["downgraded", "upgraded", None]},
+        tenableMatch={"enum": ["matched", "none", "ambiguous", "not_configured", "no_data"]})
+    s["allOf"] = [
+        {"if": {"properties": {"recordType": {"const": "finding"}}, "required": ["recordType"]},
+         "then": {"required": ["viprSeverity", "scannerSeverity", "severityChanged", "open", "hasTicket",
+                               "missingTicket", "slaBreached", "assetId"]}},
+        {"if": {"properties": {"recordType": {"const": "asset"}}, "required": ["recordType"]},
+         "then": {"required": ["isActive", "lastSeen", "viprLastSeenStale", "tenableMatch"]}},
+    ]
+    return s
+
+
+def test_shipped_schema_is_plain_drata_subset():
+    def keys(node):
+        out = set()
+        if isinstance(node, dict):
+            for k, v in node.items():
+                out.add(k)
+                out |= keys(v) if k != "properties" else set().union(*[keys(x) for x in v.values()])
+        return out
+    assert keys(_schema()) <= {"type", "properties", "required", "additionalProperties", "items", "description"}
+
+
+def test_payloads_match_unified_schema_and_ids_are_namespaced():
     fs, sc, _ = build_payloads(
         [{"finding": finding(open_cves='["CVE-2026-1"]'), "assets": [{"silk_id": "a1", "name": "h"}]},
          {"finding": finding(silk_id="f2", tool_severity="", open_cves=None), "assets": []}],
         [{"silk_id": "a1", "last_seen": "2026-09-30 00:00:00", "is_active": "true", "open_findings_count": "3"},
          {"silk_id": "a2", "is_active": "false"}], 7, NOW)
-    for f in fs:
-        jsonschema.validate(f, _schema("vulnerability_findings.schema.json"))
-    for a in sc:
-        jsonschema.validate(a, _schema("asset_scan_coverage.schema.json"))
+    validator = jsonschema.Draft202012Validator(_strict())
+    jsonschema.Draft202012Validator(_schema()).validate(fs[0])
+    for rec in fs + sc:
+        validator.validate(rec)
+    ids = [r["id"] for r in fs + sc]
+    assert len(set(ids)) == len(ids) and {r["recordType"] for r in fs + sc} == {"finding", "asset"}
     assert fs[0]["cves"] == ["CVE-2026-1"] and sc[0]["openFindingsCount"] == 3
+    assert fs[0]["assetId"] == "asset:a1" and fs[1]["assetId"] == "asset:a1" and fs[1]["assetName"] is None
+
+
+def test_same_source_id_in_both_tables_does_not_collide():
+    fs, sc, _ = build_payloads([{"finding": finding(silk_id="x"), "assets": []}],
+                               [{"silk_id": "x", "is_active": "true"}], 7, NOW)
+    assert fs[0]["id"] == "finding:x" and sc[0]["id"] == "asset:x" and fs[0]["sourceId"] == sc[0]["sourceId"] == "x"
+
+
+@pytest.mark.parametrize("bad", [
+    {"recordType": "other"},
+    {"recordType": "finding", "viprSeverity": "3"},
+    {"recordType": "asset", "tenableMatch": "maybe"},
+    {"recordType": "finding", "openFindingsCount": "3"},
+])
+def test_unified_schema_rejects_bad_records(bad):
+    fs, sc, _ = build_payloads([{"finding": finding(), "assets": []}], [{"silk_id": "a1", "is_active": "true"}], 7, NOW)
+    rec = dict(fs[0] if bad["recordType"] != "asset" else sc[0], **bad)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(_strict()).validate(rec)
+
+
+def test_schema_requires_type_specific_keys():
+    fs, sc, _ = build_payloads([{"finding": finding(), "assets": []}], [{"silk_id": "a1", "is_active": "true"}], 7, NOW)
+    v = jsonschema.Draft202012Validator(_strict())
+    for rec, key in ((fs[0], "slaBreached"), (sc[0], "tenableMatch")):
+        broken = {k: x for k, x in rec.items() if k != key}
+        with pytest.raises(jsonschema.ValidationError):
+            v.validate(broken)
 
 
 def test_severity_aliases_normalize():
@@ -163,7 +222,7 @@ def _asset(i, hosts=(), macs=()):
 
 def _status(assets, tenable):
     _, sc, _ = build_payloads([], assets, 7, NOW, tenable_assets=tenable)
-    return {a["id"]: a["tenableMatch"] for a in sc}
+    return {a["sourceId"]: a["tenableMatch"] for a in sc}
 
 
 def test_tenable_shared_target_and_generic_names_are_ambiguous_or_none():

@@ -220,7 +220,8 @@ def extract_asset_features(asset, stale_days=7, now=None, tenable_index=None):
 
 def format_finding_for_drata(f):
     return {
-        "id": f["id"], "displayName": f["name"] or f["display_id"] or f["id"],
+        "id": "finding:" + f["id"], "recordType": "finding", "sourceId": f["id"],
+        "displayName": f["name"] or f["display_id"] or f["id"],
         "displayId": f["display_id"], "name": f["name"],
         "viprSeverity": f["vipr_severity"], "scannerSeverity": f["scanner_severity"],
         "severityChanged": f["severity_changed"], "severityDirection": f["severity_direction"],
@@ -228,13 +229,14 @@ def format_finding_for_drata(f):
         "missingTicket": f["missing_ticket"], "slaDate": f["sla_date"],
         "slaBreached": f["sla_breached"], "closedAfterSla": f["closed_after_sla"], "firstSeen": f["first_seen"],
         "lastSeen": f["last_seen"], "closedAt": f["closed_at"], "cves": f["cves"],
-        "assetId": f["asset_silk_id"], "assetName": f["asset_name"],
+        "assetId": "asset:" + f["asset_silk_id"] if f["asset_silk_id"] else None, "assetName": f["asset_name"],
     }
 
 
 def format_asset_for_drata(a):
     return {
-        "id": a["id"], "displayName": a["name"] or a["id"], "name": a["name"],
+        "id": "asset:" + a["id"], "recordType": "asset", "sourceId": a["id"],
+        "displayName": a["name"] or a["id"], "name": a["name"],
         "assetType": a["asset_type"],
         "isActive": a["is_active"], "lastSeen": a["last_seen"],
         "daysSinceSeen": a["days_since_seen"], "viprLastSeenStale": a["vipr_last_seen_stale"],

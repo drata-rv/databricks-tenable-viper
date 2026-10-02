@@ -98,8 +98,7 @@ def main(argv=None):
     if not args.local and not args.warehouse_id:
         p.error("warehouse id required (--warehouse-id or DATABRICKS_WAREHOUSE_ID), or use --local")
     if not args.dry_run:
-        missing = [k for n in ("FINDINGS", "ASSETS") for k in ("DRATA_%s_CONNECTION_ID" % n, "DRATA_%s_RESOURCE_ID" % n)
-                   if not os.getenv(k)]
+        missing = [k for k in ("DRATA_CONNECTION_ID", "DRATA_RESOURCE_ID") if not os.getenv(k)]
         if missing:
             p.error("missing Drata config: " + ", ".join(missing))
     if args.drata_prod and not args.local and not args.allow_test_source_with_prod:
@@ -124,10 +123,10 @@ def main(argv=None):
     joined, assets = merge(tables)
     findings, scans, rejected = build_payloads(joined, assets, args.stale_days,
                                                tenable_assets=tables.get("tenable_assets"))
-    state.update(findings=findings, assets=scans, rejected=rejected)
+    records = findings + scans
+    state.update(records=records, rejected=rejected)
 
-    _dump(os.path.join(args.output_dir, "findings.json"), findings)
-    _dump(os.path.join(args.output_dir, "asset_scan_coverage.json"), scans)
+    _dump(os.path.join(args.output_dir, "records.json"), records)
     _dump(os.path.join(args.output_dir, "_rejected.json"), rejected)
     print("findings=%d assets=%d rejected=%d" % (len(findings), len(scans), len(rejected)))
     if rejected:
@@ -137,7 +136,7 @@ def main(argv=None):
         state["incomplete"] = False
         return 0
 
-    total = len(findings) + len(scans) + len(rejected)
+    total = len(records) + len(rejected)
     if total and len(rejected) / total > args.max_reject_ratio:
         print("ABORT: rejected ratio %.1f%% > %.1f%%; nothing pushed" %
               (100.0 * len(rejected) / total, 100.0 * args.max_reject_ratio), file=sys.stderr)
@@ -147,25 +146,22 @@ def main(argv=None):
     dc = DrataClient(os.getenv("DRATA_API_BASE", "https://public-api.drata.com"),
                      drata_api_key(args.drata_prod, args.workspace))
     session_id = "vipr-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-    failed_total = 0
-    for name, recs in (("FINDINGS", findings), ("ASSETS", scans)):
-        conn, res = os.environ["DRATA_%s_CONNECTION_ID" % name], os.environ["DRATA_%s_RESOURCE_ID" % name]
-        if push_mode == "session":
-            nrej = sum(1 for r in rejected if r["resource"] == name.lower())
-            # completing would hard-delete live records for rejected ids
-            if nrej:
-                failed = [{"id": None, "error": "%d rejected record(s): session replace refused" % nrej}]
-                ok, action = 0, "skipped"
-            else:
-                ok, failed, action = dc.replace_via_session(conn, res, recs, session_id)
-            print("%s session=%s pushed=%d failed=%d -> %s" % (name, session_id, ok, len(failed), action))
+    conn, res = os.environ["DRATA_CONNECTION_ID"], os.environ["DRATA_RESOURCE_ID"]
+    if push_mode == "session":
+        # completing would hard-delete live records for rejected ids
+        if rejected:
+            failed = [{"id": None, "error": "%d rejected record(s): session replace refused" % len(rejected)}]
+            ok, action = 0, "skipped"
         else:
-            ok, failed = dc.upsert(conn, res, recs) if recs else (0, [])
-            print("%s upsert pushed=%d failed=%d" % (name, ok, len(failed)))
-        failed_total += len(failed)
-        if failed:
-            _dump(os.path.join(args.output_dir, "_failed_%s.json" % name.lower()), failed)
-            print("%s failures (first 5): %s" % (name, failed[:5]), file=sys.stderr)
+            ok, failed, action = dc.replace_via_session(conn, res, records, session_id)
+        print("session=%s pushed=%d failed=%d -> %s" % (session_id, ok, len(failed), action))
+    else:
+        ok, failed = dc.upsert(conn, res, records) if records else (0, [])
+        print("upsert pushed=%d failed=%d" % (ok, len(failed)))
+    if failed:
+        _dump(os.path.join(args.output_dir, "_failed.json"), failed)
+        print("failures (first 5): %s" % failed[:5], file=sys.stderr)
+    failed_total = len(failed)
     state["incomplete"] = False
     return 1 if failed_total else 0
 
