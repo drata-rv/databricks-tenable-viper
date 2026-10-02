@@ -1,8 +1,3 @@
-"""--local mode: read source tables from local CSV/JSON files shaped like the Databricks tables.
-
-CSV cells follow the same round trip as run_sql() (strings, "null" -> None); the latest-batch
-filter is applied here too so fixtures exercise it.
-"""
 import csv
 import json
 import os

@@ -27,7 +27,6 @@ def no_sleep(monkeypatch):
 
 def test_rate_limit_and_error_budgets_are_separate():
     s = mock.Mock()
-    # 10 x 429 then 3 x 500 then 200: each stays within its own budget
     s.post.side_effect = [_resp(429)] * 10 + [_resp(500)] * 3 + [_resp(200)]
     assert _client(s)._post("u", {}) == (True, None)
 
@@ -57,7 +56,7 @@ def test_retry_after_is_validated_and_clamped(header, expected, no_sleep):
     c = DrataClient("http://x", "k", backoff=2.0, workers=1)
     c._build_session = lambda: s
     assert c._post("u", {})[0] is True
-    assert no_sleep == [expected]  # first-attempt default backoff is 2.0 * 1
+    assert no_sleep == [expected]
 
 
 def test_record_error_isolates_but_server_errors_do_not():
@@ -68,7 +67,7 @@ def test_record_error_isolates_but_server_errors_do_not():
     s.reset_mock()
     s.post.side_effect = [_resp(500)] * 4
     ok, failed = _client(s)._push_batch("u", [{"id": "a"}, {"id": "b"}])
-    assert ok == 0 and len(failed) == 2 and s.post.call_count == 4  # no per-record amplification
+    assert ok == 0 and len(failed) == 2 and s.post.call_count == 4
 
 
 def test_auth_error_is_fatal_and_stops_remaining_batches():
@@ -107,10 +106,10 @@ def test_session_complete_flow_urls_and_bodies():
 
 def test_session_cancels_on_failure_and_reports_action_failure():
     s = mock.Mock()
-    s.post.side_effect = [_resp(400), _resp(200)]  # stage fails, cancel ok
+    s.post.side_effect = [_resp(400), _resp(200)]
     ok, failed, action = _client(s).replace_via_session(1, 2, [{"id": "a"}], "s-2")
     assert action == "cancel" and failed and s.post.call_args.kwargs["json"] == {"action": "cancel"}
-    s.post.side_effect = [_resp(200)] + [_resp(500)] * 4  # stage ok, complete fails
+    s.post.side_effect = [_resp(200)] + [_resp(500)] * 4
     ok, failed, action = _client(s).replace_via_session(1, 2, [{"id": "a"}], "s-3")
     assert action == "complete" and "session complete failed" in failed[-1]["error"]
 

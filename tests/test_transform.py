@@ -99,7 +99,6 @@ def _run_sql_with(csv_chunks):
 
 
 def test_run_sql_multichunk_header_only_when_present():
-    # chunk 0 has a header, chunk 1 does not; "null" -> None
     rows = _run_sql_with(["a,b\n1,2\n", "3,null\n"])
     assert rows == [{"a": "1", "b": "2"}, {"a": "3", "b": None}]
 
@@ -123,7 +122,7 @@ def test_unknown_or_conflicting_severity_is_undetermined(vipr, tool):
 
 def test_agreeing_multiple_tenable_keys_ok():
     assert scanner_severity('{"tenable_io":"High","tenable_sc":"high"}') == "high"
-    assert scanner_severity("{tenable -> medium, qualys -> low}") == "medium"  # spark map rendering
+    assert scanner_severity("{tenable -> medium, qualys -> low}") == "medium"
 
 
 @pytest.mark.parametrize("sla", ["2026-09-01T00:00:00+00:00", "2026-09-01T00:00:00Z", "2026-09-01 00:00:00.123"])
@@ -148,7 +147,6 @@ def test_closed_after_sla():
 
 
 def test_staleness_uses_exact_timedelta():
-    # 7 days + 6 hours old with a 7 day limit is stale even though .days == 7
     a = extract_asset_features({"silk_id": "a", "last_seen": "2026-09-23 18:00:00"}, 7, NOW)
     assert a["days_since_seen"] == 7 and a["vipr_last_seen_stale"] is True
 
@@ -170,7 +168,7 @@ def _status(assets, tenable):
 
 def test_tenable_shared_target_and_generic_names_are_ambiguous_or_none():
     got = _status([_asset("a0", ["web-1"]), _asset("a1", ["web-1"])], [_t("t1", ["web-1"])])
-    assert got == {"a0": "ambiguous", "a1": "ambiguous"}  # one Tenable asset claimed twice
+    assert got == {"a0": "ambiguous", "a1": "ambiguous"}
     assert _status([_asset("a0", ["ubuntu"])], [_t("t1", ["ubuntu"])]) == {"a0": "none"}
 
 
@@ -178,7 +176,7 @@ def test_tenable_mac_normalised_and_conflict_ambiguous():
     assert _status([_asset("a", [], ["AA-BB-CC-00-00-01"])], [_t("t", [], ["aa:bb:cc:00:00:01"])]) == {"a": "matched"}
     got = _status([_asset("a", ["y"], ["AA:BB:CC:00:00:01"])],
                   [_t("t1", ["x"], ["aa:bb:cc:00:00:01"]), _t("t2", ["y"])])
-    assert got == {"a": "ambiguous"}  # MAC says t1, hostname says t2
+    assert got == {"a": "ambiguous"}
 
 
 def test_tenable_empty_and_duplicate_ids_are_undetermined():

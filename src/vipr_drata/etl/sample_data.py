@@ -1,9 +1,3 @@
-"""Synthetic fixtures for --local mode (fake data; shapes follow docs/*.xlsx, CSV round-trip style).
-
-Covers: severity downgrade/upgrade/unchanged/undetermined, SLA breach, missing ticket, closed finding,
-unresolved + ambiguous asset, stale/active asset, Tenable matched/ambiguous/none, old batch rows
-(latest-batch filter), and a record with no id (rejected).
-"""
 import csv
 import json
 import os
@@ -34,14 +28,14 @@ def sample_rows(now=None):
         return row
 
     findings = [
-        f("f-001", "medium", "high"),                                       # downgraded
+        f("f-001", "medium", "high"),
         f("f-002", "high", "medium", has_ticket="false", sla_date=_ts(now, 3), asset_silk_id="a-002"),
-        f("f-003", "low", "low", asset_silk_id="a-003"),                    # unchanged
+        f("f-003", "low", "low", asset_silk_id="a-003"),
         f("f-004", "high", "high", open="false", closed_timestamp=_ts(now, 2), asset_silk_id="a-004"),
-        f("f-005", "medium", None),                                         # no Tenable rating
-        f("f-006", "critical", "critical", asset_silk_id="a-missing"),      # unresolved asset
-        f("", "low", "low"),                                                # rejected: no id
-        dict(f("f-001", "critical", "high"), **old),                        # old batch: must be ignored
+        f("f-005", "medium", None),
+        f("f-006", "critical", "critical", asset_silk_id="a-missing"),
+        f("", "low", "low"),
+        dict(f("f-001", "critical", "high"), **old),  # old batch: must be ignored
     ]
     def a(i, name, seen, **kw):
         row = {"silk_id": i, "name": name, "asset_type": "HOST", "is_active": "true", "last_seen": _ts(now, seen),
@@ -51,12 +45,12 @@ def sample_rows(now=None):
         return row
 
     assets = [
-        a("a-001", "host-one", 1, mac_addresses=J(["AA:BB:CC:00:00:01"])),  # fresh, Tenable matched
-        a("a-002", "host-two", 30),                                         # stale, Tenable ambiguous
-        a("a-003", "host-three", 2),                                        # Tenable none
+        a("a-001", "host-one", 1, mac_addresses=J(["AA:BB:CC:00:00:01"])),
+        a("a-002", "host-two", 30),
+        a("a-003", "host-three", 2),
         a("a-004", "host-four", 2),
-        a("a-004", "host-four-dup", 2),                                     # duplicate silk_id
-        dict(a("a-001", "host-one-old", 50), **old),                        # old batch
+        a("a-004", "host-four-dup", 2),  # conflicting duplicate id
+        dict(a("a-001", "host-one-old", 50), **old),
     ]
     def t(i, hosts, scan, **kw):
         row = {"id": i, "hostnames": J(hosts), "fqdns": J([]), "mac_addresses": J([]),

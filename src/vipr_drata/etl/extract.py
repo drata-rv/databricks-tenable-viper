@@ -1,8 +1,3 @@
-"""Table registry (add a table = one entry) and parallel pull + join.
-
-Column lists are verified against docs/*.xlsx by tests/test_schema_contract.py. Never SELECT *:
-every landing table carries a large __raw column.
-"""
 import os
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
@@ -19,12 +14,9 @@ TABLE_REGISTRY = [
     TableSpec("assets", "VIPR_ASSETS_TABLE", "silk_id", True, (
         "silk_id", "name", "asset_type", "is_active", "last_seen", "open_findings_count",
         "hostnames", "mac_addresses")),
-    # Optional: Tenable scanner-activity evidence (si_prod_catalog...t_tenable_assets)
     TableSpec("tenable_assets", "TENABLE_ASSETS_TABLE", "id", False, (
         "id", "hostnames", "fqdns", "mac_addresses", "last_scan_time",
         "last_authenticated_scan_date", "last_seen", "has_agent", "tenable_agent_days_since_active")),
-    # TableSpec("cves", "VIPR_CVES_TABLE", "cve", False, ("cve", "cvss_score", "epss_score", "threat_intel_is_listed_on_cisa_kev")),
-    # TableSpec("evidence", "VIPR_EVIDENCE_TABLE", "id", False, ("id", "tool_evidence")),
 ]
 
 
@@ -32,11 +24,12 @@ def active_specs():
     return [s for s in TABLE_REGISTRY if s.required or os.getenv(s.env_var)]
 
 
+# never SELECT *: __raw is large
+# landing tables keep one copy per ingest batch: latest batch only
 def _pull(client, warehouse_id, spec):
     table = os.getenv(spec.env_var)
     if not table:
         raise RuntimeError("%s not set" % spec.env_var)
-    # Landing tables hold one copy of every row per ingest batch: always filter to the latest.
     sql = "SELECT %s FROM %s WHERE %s" % (", ".join(spec.columns), table, latest_batch_clause(table))
     return spec.label, run_sql(client, warehouse_id, sql)
 
@@ -48,10 +41,10 @@ def extract_all(client, warehouse_id):
 
 
 def merge(tables):
-    """Findings drive scope. Assets indexed {silk_id: [rows]} (list, not last-wins)."""
     assets = {}
     for a in tables.get("assets", []):
-        if a.get("silk_id"):  # null ids never join
+        # null ids never join
+        if a.get("silk_id"):
             assets.setdefault(a["silk_id"], []).append(a)
     return [
         {"finding": f, "assets": assets.get(f.get("asset_silk_id"), []) if f.get("asset_silk_id") else []}

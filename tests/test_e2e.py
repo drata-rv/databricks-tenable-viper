@@ -12,8 +12,8 @@ IDS = {"FINDINGS": ("11", "12"), "ASSETS": ("21", "22")}
 
 
 def fake_run_sql(client, wh, sql):
-    assert "SELECT *" not in sql and "__raw" not in sql  # explicit columns only
-    assert "MAX(__date)" in sql  # latest-batch filter on every table
+    assert "SELECT *" not in sql and "__raw" not in sql
+    assert "MAX(__date)" in sql
     return FINDINGS if "FROM c.s.t_vipr_all_findings" in sql else ASSETS
 
 
@@ -59,7 +59,7 @@ def test_prod_flag_uses_prod_key_and_never_sandbox(monkeypatch, tmp_path):
     args = _env(monkeypatch, tmp_path)
     monkeypatch.setenv("DRATA_API_KEY", "sandbox-key")
     with mock.patch.object(cli, "get_client_for_env"), mock.patch("vipr_drata.etl.extract.run_sql", fake_run_sql):
-        with pytest.raises(RuntimeError):  # prod key missing: must not fall back
+        with pytest.raises(RuntimeError):
             cli.main(args + ["--drata-prod"])
         monkeypatch.setenv("DRATA_API_KEY_PROD", "prod-key")
         with mock.patch.object(cli, "DrataClient") as DC:
@@ -87,7 +87,7 @@ def test_session_mode_refused_when_anything_rejected(monkeypatch, tmp_path):
             mock.patch.object(cli.DrataClient, "replace_via_session", return_value=(1, [], "complete")) as sess:
         rc = cli.main(args + ["--push-mode", "session", "--max-reject-ratio", "0.9"])
     assert rc == 1
-    assert [c.args[0] for c in sess.call_args_list] == ["21"]  # findings skipped (rejected>0), assets replaced
+    assert [c.args[0] for c in sess.call_args_list] == ["21"]
 
 
 def test_reject_ratio_guard_aborts_before_push(monkeypatch, tmp_path):
@@ -139,11 +139,11 @@ def test_local_mode_runs_without_databricks(tmp_path):
     with mock.patch.object(cli, "get_client_for_env") as gc, mock.patch.object(cli.DrataClient, "upsert") as up:
         assert cli.main(["--local", "--local-data", str(tmp_path / "data"), "--output-dir", str(out)]) == 0
     gc.assert_not_called()
-    up.assert_not_called()  # --local never pushes unless --push
+    up.assert_not_called()
     f = {r["id"]: r for r in json.load(open(out / "findings.json"))}
     a = {r["id"]: r for r in json.load(open(out / "asset_scan_coverage.json"))}
     rej = json.load(open(out / "_rejected.json"))
-    assert f["f-001"]["viprSeverity"] == "medium" and f["f-001"]["severityDirection"] == "downgraded"  # old batch ignored
+    assert f["f-001"]["viprSeverity"] == "medium" and f["f-001"]["severityDirection"] == "downgraded"
     assert f["f-002"]["slaBreached"] and f["f-002"]["missingTicket"]
     assert f["f-005"]["severityChanged"] is None and f["f-006"]["assetName"] is None
     assert a["a-001"]["tenableMatch"] == "matched" and a["a-002"]["tenableMatch"] == "ambiguous"
@@ -154,7 +154,7 @@ def test_local_mode_runs_without_databricks(tmp_path):
 
 def test_local_regenerates_when_dir_empty_and_rejects_prod(monkeypatch, tmp_path):
     d = tmp_path / "d"
-    d.mkdir()  # exists but empty -> generated
+    d.mkdir()
     assert cli.main(["--local", "--local-data", str(d), "--output-dir", str(tmp_path / "o")]) == 0
     assert (d / "findings.csv").exists()
     with pytest.raises(SystemExit):

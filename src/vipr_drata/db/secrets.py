@@ -1,4 +1,3 @@
-"""Single place that knows where credentials come from (env locally, secret scope on Databricks)."""
 import os
 
 

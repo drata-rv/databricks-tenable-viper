@@ -1,4 +1,3 @@
-"""extract_*: business logic (raw -> signals). format_*: pure mapping to Drata JSON."""
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -8,7 +7,6 @@ SEVERITY_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 
 def _parse_map(v):
-    """Databricks CSV renders maps as JSON; also tolerate Spark's '{k -> v, k2 -> v2}' form."""
     if isinstance(v, dict):
         return v
     if not v:
@@ -26,7 +24,6 @@ def _parse_map(v):
 
 
 def _parse_ts(v):
-    """UTC-aware datetime; accepts 'YYYY-MM-DD[ T]HH:MM:SS[.fff][Z|+HH:MM]' and plain dates."""
     if not v:
         return None
     s = str(v).strip().replace(" ", "T", 1).replace("Z", "+00:00")
@@ -48,16 +45,15 @@ _SEV_ALIASES = {"informational": "info", "none": "info", "moderate": "medium", "
 
 
 def _sev(v):
-    """Canonical level or None. Unknown vocab (numeric codes, 'unscored', ...) is undetermined, not ranked."""
     if not v:
         return None
     v = str(v).strip().lower()
     v = _SEV_ALIASES.get(v, v)
+    # unknown vocab (numeric codes, "unscored") is undetermined, not ranked
     return v if v in SEVERITY_ORDER else None
 
 
 def _parse_list(v):
-    """Databricks CSV renders arrays as JSON; also tolerate '[a, b]'."""
     if isinstance(v, list):
         return v
     if not v:
@@ -73,7 +69,6 @@ def _parse_list(v):
 
 
 def _tri(v):
-    """Tri-state bool: None when the source value is missing (undetermined), never a guess."""
     return None if v is None or v == "" else is_true(v)
 
 
@@ -85,8 +80,6 @@ def _int(v):
 
 
 def scanner_severity(tool_severity, tool="tenable"):
-    """Raw scanner rating from Vipr's per-tool map. None if absent, unrecognised, or several
-    matching keys disagree."""
     vals = {_sev(v) for k, v in _parse_map(tool_severity).items() if tool in k.lower()}
     return vals.pop() if len(vals) == 1 and None not in vals else None
 
@@ -99,14 +92,12 @@ def extract_finding_features(finding, assets, now=None):
     has_ticket = _tri(finding.get("has_ticket"))
     sla = _parse_ts(finding.get("sla_date"))
     closed_at = _parse_ts(finding.get("closed_timestamp"))
-    changed = None if vipr is None or scan is None else vipr != scan  # undetermined, not guessed
-    # SLA: None unless we can actually tell
+    changed = None if vipr is None or scan is None else vipr != scan
     if is_open is None or (finding.get("sla_date") and sla is None):
         breached = None
     else:
         breached = bool(is_open and sla and sla < now)
     closed_late = (closed_at > sla) if (is_open is False and sla and closed_at) else None
-    # one asset expected per silk_id; anything else -> unresolved, not arbitrary
     asset = assets[0] if len(assets) == 1 else None
     return {
         "id": finding.get("silk_id"),
@@ -145,15 +136,14 @@ def _norm_mac(m):
 
 
 def index_tenable_assets(tenable_assets):
-    """-> {"mac": {norm: ids}, "host": {name: ids}, "rows": {id: row}, "dup": ids with >1 row,
-    "claims": {tenable_id: n Vipr assets claiming it} (filled by claim())}."""
     idx = {"mac": {}, "host": {}, "rows": {}, "dup": set(), "claims": {}}
     for t in tenable_assets or []:
         tid = t.get("id")
         if not tid:
             continue
         if tid in idx["rows"]:
-            idx["dup"].add(tid)  # same id twice in latest batch: undetermined, not last-row-wins
+            # duplicate id in latest batch: undetermined, not last-row-wins
+            idx["dup"].add(tid)
         idx["rows"][tid] = t
         for v in _parse_list(t.get("mac_addresses")):
             if _norm_mac(v):
@@ -176,7 +166,6 @@ def _candidates(asset, idx):
 
 
 def claim_tenable(assets, idx):
-    """Count how many Vipr assets point at each Tenable asset (a shared target is ambiguous)."""
     for a in assets:
         macs, hosts = _candidates(a, idx)
         for tid in (macs or hosts):
@@ -184,16 +173,14 @@ def claim_tenable(assets, idx):
 
 
 def match_tenable(asset, idx):
-    """-> (status, tenable_row). status: matched | none | ambiguous | not_configured | no_data.
-    Exact normalised MAC and/or exact non-generic hostname. Only a single, unconflicted,
-    uniquely-claimed Tenable asset is 'matched'; anything else is undetermined."""
     if idx is None:
         return "not_configured", None
     if not idx["rows"]:
-        return "no_data", None  # configured but empty latest batch: not evidence of 'unscanned'
+        # empty batch is not evidence of "unscanned"
+        return "no_data", None
     macs, hosts = _candidates(asset, idx)
     if macs and hosts and macs != hosts and not (macs & hosts):
-        return "ambiguous", None  # MAC and hostname disagree
+        return "ambiguous", None
     cands = macs or hosts
     if not cands:
         return "none", None
@@ -225,7 +212,8 @@ def extract_asset_features(asset, stale_days=7, now=None, tenable_index=None):
         "is_active": is_true(asset.get("is_active")),
         "last_seen": _iso(seen),
         "days_since_seen": days,
-        "vipr_last_seen_stale": None if seen is None else (now - seen) > limit,  # NOT scanner activity; None = undetermined
+        # Vipr last_seen is not scanner activity
+        "vipr_last_seen_stale": None if seen is None else (now - seen) > limit,
         "open_findings_count": _int(asset.get("open_findings_count")),
     }
 
@@ -258,8 +246,6 @@ def format_asset_for_drata(a):
 
 
 def _split_duplicates(rows, key, label, rejected):
-    """Byte-identical repeats of an id (e.g. a re-loaded file) collapse to one row; ids with
-    conflicting rows are rejected in full, never last-write-wins."""
     groups = {}
     for r in rows:
         groups.setdefault(key(r), []).append(r)
@@ -274,8 +260,6 @@ def _split_duplicates(rows, key, label, rejected):
 
 
 def build_payloads(joined, assets, stale_days=7, now=None, tenable_assets=None):
-    """Returns (findings, asset_records, rejected). Records w/o a stable id, or with conflicting
-    duplicate ids, are rejected (and logged by the caller), not dropped or arbitrarily picked."""
     rejected = []
     joined = _split_duplicates(joined, lambda j: j["finding"].get("silk_id"), "finding", rejected)
     assets = _split_duplicates(assets, lambda a: a.get("silk_id"), "asset", rejected)

@@ -6,7 +6,6 @@ variables:
     default: vipr-drata-test
   warehouse_id:
     default: ""
-  # No source-table defaults: each target sets its own, so prod can never inherit a test table.
   findings_table:
     default: ""
   assets_table:
@@ -26,7 +25,7 @@ variables:
   push_mode:
     default: upsert
   tenable_assets_table:
-    default: ""   # optional: Tenable scanner-activity evidence (t_tenable_assets)
+    default: ""
 
 artifacts:
   vipr_drata:
@@ -77,10 +76,10 @@ resources:
             client: "2"
             dependencies:
               - ./dist/*.whl
-      # schedule:
-      #   quartz_cron_expression: "0 0 2 * * ?"
-      #   timezone_id: UTC
-      #   pause_status: PAUSED
+      schedule:
+        quartz_cron_expression: "0 0 2 * * ?"
+        timezone_id: UTC
+        pause_status: PAUSED
 
     smoke_test:
       name: vipr-drata-smoke-${bundle.target}
@@ -109,11 +108,8 @@ targets:
       secret_scope: vipr-drata-prod
       workspace_name: prod
       drata_prod: "true"
-      # Vipr tables are only documented in si_test_catalog (docs/Vipr Tables Describe.xlsx).
-      # findings_table / assets_table intentionally empty -> the job fails closed until Nationwide
-      # confirms a prod location (the CLI also refuses test-catalog sources with Drata prod).
+      # prod Vipr tables unconfirmed: empty fails closed
       findings_table: ""
       assets_table: ""
       tenable_assets_table: si_prod_catalog.nw_harmonized_sensitive.t_tenable_assets
-    # run_as:
-    #   service_principal_name: <application-id-uuid>
+    # set run_as.service_principal_name (Application ID UUID) and workspace.host

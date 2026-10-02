@@ -1,4 +1,3 @@
-"""SQL Statement Execution API pull: EXTERNAL_LINKS + CSV, chunked, polled."""
 import csv
 import io
 import time
@@ -23,7 +22,7 @@ def is_true(value):
 
 
 def _download(url, chunk_index):
-    """Fetch one result chunk. Errors never carry the pre-signed URL (it is a short-lived credential)."""
+    # error text must not carry the pre-signed URL
     try:
         r = requests.get(url, timeout=300)
         r.raise_for_status()
@@ -54,8 +53,9 @@ def run_sql(client, warehouse_id, sql, timeout_s=1800):
     while chunk is not None:
         for link in chunk.external_links or []:
             rows = list(csv.reader(io.StringIO(_download(link.external_link, chunk.chunk_index))))
+            # header row present on some chunks only
             if rows and [c.lower() for c in rows[0]] == [c.lower() for c in columns]:
-                rows = rows[1:]  # header row present only on some chunks/configs
+                rows = rows[1:]
             records.extend(rows_to_records(columns, rows))
         if chunk.next_chunk_index is None:
             break

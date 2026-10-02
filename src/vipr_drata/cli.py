@@ -1,9 +1,3 @@
-"""CLI / python_wheel_task entry point.
-
---env KEY=VALUE (repeatable) feeds os.environ before anything reads config: serverless
-python_wheel_task has no env-var injection, job parameters are the only channel in.
-Exit codes: 0 ok, 1 push failures, 2 config/guard abort.
-"""
 import argparse
 import atexit
 import json
@@ -21,7 +15,6 @@ from .transform import build_payloads
 
 
 def apply_env_pairs(argv):
-    """Apply every `--env K=V` / `--env=K=V` in argv to os.environ. Returns malformed tokens."""
     bad, i = [], 0
     while i < len(argv):
         tok = argv[i]
@@ -83,10 +76,11 @@ def main(argv=None):
         try:
             from dotenv import load_dotenv
 
-            load_dotenv()  # never overrides already-set vars
+            load_dotenv()
         except ImportError:
             pass
-    bad = apply_env_pairs(argv)  # after .env so --env wins; before the parser reads env defaults
+    # --env overrides .env; must run before parser env defaults
+    bad = apply_env_pairs(argv)
     p = build_parser()
     if bad:
         p.error("malformed --env (need KEY=VALUE): " + ", ".join(bad))
@@ -158,7 +152,8 @@ def main(argv=None):
         conn, res = os.environ["DRATA_%s_CONNECTION_ID" % name], os.environ["DRATA_%s_RESOURCE_ID" % name]
         if push_mode == "session":
             nrej = sum(1 for r in rejected if r["resource"] == name.lower())
-            if nrej:  # completing would hard-delete the previously-good Drata records for rejected ids
+            # completing would hard-delete live records for rejected ids
+            if nrej:
                 failed = [{"id": None, "error": "%d rejected record(s): session replace refused" % nrej}]
                 ok, action = 0, "skipped"
             else:
@@ -176,7 +171,6 @@ def main(argv=None):
 
 
 def run():
-    """Console-script / python_wheel_task entry point: a non-zero result must fail the process."""
     sys.exit(main())
 
 

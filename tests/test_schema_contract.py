@@ -1,4 +1,3 @@
-"""Pins registry columns, env defaults and local fixtures to the real schema exports in docs/*.xlsx."""
 import csv
 import pathlib
 
@@ -9,7 +8,6 @@ from vipr_drata.etl.extract import TABLE_REGISTRY
 from vipr_drata.etl.sample_data import write_sample_data
 
 DOCS = pathlib.Path(__file__).parent.parent / "docs"
-# registry label -> (workbook, sheet)
 SOURCES = {
     "findings": ("Vipr Tables Describe.xlsx", "Findings"),
     "assets": ("Vipr Tables Describe.xlsx", "Assets"),
@@ -23,7 +21,7 @@ def load_sheet(book, sheet):
     cols = {}
     for name, dtype in rows[2:]:
         if str(name).startswith("#"):
-            break  # clustering info follows
+            break
         cols[name] = dtype
     return rows[0][0], cols
 
@@ -32,7 +30,7 @@ def load_sheet(book, sheet):
 def test_registry_columns_exist_in_xlsx(spec):
     _, cols = load_sheet(*SOURCES[spec.label])
     assert not [c for c in spec.columns if c not in cols], "columns not in xlsx"
-    assert "__date" in cols and "__hour" in cols  # latest-batch filter relies on these
+    assert "__date" in cols and "__hour" in cols
     assert "__raw" not in spec.columns
 
 
@@ -46,7 +44,7 @@ def test_env_example_table_names_match_xlsx():
 def test_tenable_array_columns_are_arrays():
     _, cols = load_sheet(*SOURCES["tenable_assets"])
     for c in ("hostnames", "fqdns", "mac_addresses"):
-        assert cols[c].startswith("array<")  # parsed with _parse_list
+        assert cols[c].startswith("array<")
 
 
 def test_local_fixture_headers_are_subset_of_xlsx(tmp_path):

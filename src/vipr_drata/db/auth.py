@@ -1,4 +1,3 @@
-"""Databricks client: OAuth M2M first, PAT fallback. One secret scope per workspace."""
 import os
 
 from .secrets import get_secret
@@ -23,9 +22,8 @@ def get_client_for_env(workspace):
     return WorkspaceClient(host=host, token=token)
 
 
+# prod never falls back to the sandbox key; scope is the running workspace's
 def drata_api_key(prod, workspace="test"):
-    """Explicit sandbox/prod selection; prod never falls back to sandbox credentials.
-    Scope is the running workspace's (the only one the job principal can read)."""
     scope = scope_for(workspace)
     if prod:
         return get_secret("drata-api-key-prod", scope=scope, env_var="DRATA_API_KEY_PROD")
