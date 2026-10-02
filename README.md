@@ -9,10 +9,27 @@ Outputs per run: `vulnerability_findings` (Vipr severity vs Tenable scanner seve
 python3.12 -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
 cp .env.example .env   # fill in
 pytest
-vipr-drata --dry-run   # extract + transform only
+vipr-drata --local     # initial testing: synthetic tables in ./local_data, no Databricks, no push
+vipr-drata --local --push   # same, but push to the Drata *sandbox* connection (never prod)
+vipr-drata --dry-run   # real Databricks (.env creds), extract + transform only
 vipr-drata             # upsert push (sandbox unless DRATA_PROD=true)
 vipr-drata --push-mode session   # atomic snapshot replace; completes only if 0 failures, else cancels
 ```
+
+### Local mode
+`--local` reads `findings.csv`, `assets.csv` and optionally `tenable_assets.csv` (or `.json`) from `--local-data`
+(default `./local_data`, auto-generated with fake rows on first run, gitignored; delete to regenerate). Files use the
+same columns as the real tables (`docs/*.xlsx`), including `__date/__hour`, so the latest-batch filter is exercised.
+To test with your own rows, drop CSVs in the directory (arrays/maps as JSON strings, like the Databricks CSV export).
+Outputs go to `./output`; inspect `findings.json`, `asset_scan_coverage.json`, `_rejected.json`.
+
+Optional `TENABLE_ASSETS_TABLE` adds scanner-activity evidence: each Vipr asset is matched to a Tenable asset by exact
+MAC, then exact hostname, only when exactly one Tenable asset matches (`tenableMatch` = matched/none/ambiguous);
+anything else stays undetermined.
+
+Schema contract: `tests/test_schema_contract.py` checks every pulled column and the default table names against
+`docs/*.xlsx`. Duplicate ids in the latest batch are rejected to `_rejected.json`, never last-write-wins.
+Schemas for creating the Drata connections are in `schemas/`.
 
 ## Deploy
 Bump `version` in `pyproject.toml` every deploy, `python -m build --wheel`, `databricks bundle deploy -t test|prod`.

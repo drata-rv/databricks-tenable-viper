@@ -44,9 +44,10 @@ def run_sql(client, warehouse_id, sql, timeout_s=1800):
         for link in chunk.external_links or []:
             r = requests.get(link.external_link, timeout=300)
             r.raise_for_status()
-            rdr = csv.reader(io.StringIO(r.text))
-            next(rdr, None)  # header
-            records.extend(rows_to_records(columns, rdr))
+            rows = list(csv.reader(io.StringIO(r.text)))
+            if rows and [c.lower() for c in rows[0]] == [c.lower() for c in columns]:
+                rows = rows[1:]  # header row present only on some chunks/configs
+            records.extend(rows_to_records(columns, rows))
         if chunk.next_chunk_index is None:
             break
         chunk = client.statement_execution.get_statement_result_chunk_n(

@@ -32,6 +32,8 @@ except ImportError:
 from .db.auth import drata_api_key, get_client_for_env  # noqa: E402
 from .db.drata_client import DrataClient  # noqa: E402
 from .etl.extract import extract_all, merge  # noqa: E402
+from .etl.local import load_local_tables  # noqa: E402
+from .etl.sample_data import write_sample_data  # noqa: E402
 from .transform import build_payloads  # noqa: E402
 
 
@@ -51,11 +53,20 @@ def main(argv=None):
                    help="push to Drata prod tenant (separate credentials, no sandbox fallback)")
     p.add_argument("--push-mode", choices=["upsert", "session"], default=os.getenv("DRATA_PUSH_MODE", "upsert"),
                    help="upsert: never deletes. session: atomic snapshot replace (hard-deletes records not in this run)")
+    p.add_argument("--local", action="store_true",
+                   help="local test mode: read tables from --local-data files, no Databricks, no push unless --push (sandbox only)")
+    p.add_argument("--local-data", default=os.getenv("LOCAL_DATA_DIR", "local_data"),
+                   help="directory with findings/assets[/tenable_assets] .csv or .json (see scripts/generate_local_data.py)")
+    p.add_argument("--push", action="store_true", help="with --local: also push to the Drata sandbox connection")
     p.add_argument("--dry-run", action="store_true", help="extract+transform only, no push")
     p.add_argument("--env", action="append", help="KEY=VALUE applied to environment (job params)")
     args = p.parse_args(argv)
-    if not args.warehouse_id:
-        p.error("warehouse id required (--warehouse-id or DATABRICKS_WAREHOUSE_ID)")
+    if args.local and args.drata_prod:
+        p.error("--local never pushes to Drata prod; drop --drata-prod")
+    if args.local and not args.push:
+        args.dry_run = True
+    if not args.local and not args.warehouse_id:
+        p.error("warehouse id required (--warehouse-id or DATABRICKS_WAREHOUSE_ID), or use --local")
 
     if not args.dry_run:
         missing = [k for n in ("FINDINGS", "ASSETS") for k in ("DRATA_%s_CONNECTION_ID" % n, "DRATA_%s_RESOURCE_ID" % n)
@@ -68,10 +79,17 @@ def main(argv=None):
                     if state.get("incomplete") else None)
     state["incomplete"] = True
 
-    client = get_client_for_env(args.workspace)
-    tables = extract_all(client, args.warehouse_id)
+    if args.local:
+        if not os.path.isdir(args.local_data):
+            write_sample_data(args.local_data)
+            print("LOCAL MODE: created synthetic sample tables in %s (delete to regenerate)" % args.local_data)
+        tables = load_local_tables(args.local_data)
+        print("LOCAL MODE: tables from %s (no Databricks)" % args.local_data)
+    else:
+        tables = extract_all(get_client_for_env(args.workspace), args.warehouse_id)
     joined, assets = merge(tables)
-    findings, scans, rejected = build_payloads(joined, assets, args.stale_days)
+    findings, scans, rejected = build_payloads(joined, assets, args.stale_days,
+                                               tenable_assets=tables.get("tenable_assets"))
     state.update(findings=findings, assets=scans, rejected=rejected)
 
     _dump(os.path.join(args.output_dir, "findings.json"), findings)
@@ -82,7 +100,7 @@ def main(argv=None):
     if args.dry_run:
         state["incomplete"] = False
         return 0
-    dc = DrataClient(os.getenv("DRATA_API_BASE", "https://public-api.drata.com"), drata_api_key(args.drata_prod))
+    dc = DrataClient(os.getenv("DRATA_API_BASE", "https://public-api.drata.com"), drata_api_key(args.drata_prod, args.workspace))
     session_id = "vipr-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     failed_total = 0
     for name, recs in (("FINDINGS", findings), ("ASSETS", scans)):

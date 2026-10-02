@@ -24,6 +24,8 @@ variables:
     default: ""
   push_mode:
     default: upsert
+  tenable_assets_table:
+    default: ""   # optional: Tenable scanner-activity evidence (t_tenable_assets)
 
 artifacts:
   vipr_drata:
@@ -54,6 +56,8 @@ resources:
               - VIPR_FINDINGS_TABLE=${var.findings_table}
               - --env
               - VIPR_ASSETS_TABLE=${var.assets_table}
+              - --env
+              - TENABLE_ASSETS_TABLE=${var.tenable_assets_table}
               - --env
               - DRATA_PROD=${var.drata_prod}
               - --env
@@ -101,7 +105,8 @@ targets:
       secret_scope: vipr-drata-prod
       workspace_name: prod
       drata_prod: "true"
-      findings_table: si_prod_catalog.nw_harmonized_sensitive.t_vipr_all_findings
-      assets_table: si_prod_catalog.nw_harmonized_sensitive.t_vipr_all_assets
+      # Vipr tables are only documented in si_test_catalog (docs/Vipr Tables Describe.xlsx).
+      # Override findings_table / assets_table here once Nationwide confirms a prod location.
+      tenable_assets_table: si_prod_catalog.nw_harmonized_sensitive.t_tenable_assets
     # run_as:
     #   service_principal_name: <application-id-uuid>

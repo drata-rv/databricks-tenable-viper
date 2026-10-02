@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from .db.queries import is_true
 
-SEVERITY_ORDER = {"info": 0, "informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+SEVERITY_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 
 def _parse_map(v):
@@ -35,8 +35,33 @@ def _iso(dt):
     return dt.isoformat() if dt else None
 
 
+_SEV_ALIASES = {"informational": "info", "none": "info", "moderate": "medium", "important": "high"}
+
+
 def _sev(v):
-    return str(v).strip().lower() if v else None
+    if not v:
+        return None
+    v = str(v).strip().lower()
+    return _SEV_ALIASES.get(v, v)
+
+
+def _parse_list(v):
+    if isinstance(v, list):
+        return v
+    if not v:
+        return []
+    try:
+        out = json.loads(v)
+        return out if isinstance(out, list) else [out]
+    except (ValueError, TypeError):
+        return [v]
+
+
+def _int(v):
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
 
 
 def scanner_severity(tool_severity, tool="tenable"):
@@ -79,18 +104,57 @@ def extract_finding_features(finding, assets, now=None):
         "first_seen": _iso(_parse_ts(finding.get("first_seen"))),
         "last_seen": _iso(_parse_ts(finding.get("last_seen"))),
         "closed_at": _iso(_parse_ts(finding.get("closed_timestamp"))),
-        "cves": finding.get("open_cves"),
+        "cves": _parse_list(finding.get("open_cves")),
         "asset_silk_id": finding.get("asset_silk_id"),
         "asset_resolved": asset is not None,
         "asset_name": asset.get("name") if asset else None,
     }
 
 
-def extract_asset_features(asset, stale_days=7, now=None):
+def index_tenable_assets(tenable_assets):
+    """Lowercased MAC / hostname / FQDN -> set of Tenable asset ids, plus id -> row."""
+    keys, rows = {}, {}
+    for t in tenable_assets or []:
+        tid = t.get("id")
+        if not tid:
+            continue
+        rows[tid] = t
+        for field in ("mac_addresses", "hostnames", "fqdns"):
+            for v in _parse_list(t.get(field)):
+                if v:
+                    keys.setdefault((field == "mac_addresses", str(v).strip().lower()), set()).add(tid)
+    return keys, rows
+
+
+def match_tenable(asset, tenable_index):
+    """-> (status, tenable_row). Exact MAC then exact hostname; exactly one candidate or undetermined."""
+    if tenable_index is None:
+        return "not_configured", None
+    keys, rows = tenable_index
+    for is_mac, field in ((True, "mac_addresses"), (False, "hostnames")):
+        cands = set()
+        for v in _parse_list(asset.get(field)):
+            cands |= keys.get((is_mac, str(v).strip().lower()), set())
+        if len(cands) == 1:
+            return "matched", rows[next(iter(cands))]
+        if len(cands) > 1:
+            return "ambiguous", None
+    return "none", None
+
+
+def extract_asset_features(asset, stale_days=7, now=None, tenable_index=None):
     now = now or datetime.now(timezone.utc)
     seen = _parse_ts(asset.get("last_seen"))
     days = (now - seen).days if seen else None
+    status, trow = match_tenable(asset, tenable_index)
+    t_scan = _parse_ts(trow.get("last_scan_time")) if trow else None
+    t_days = (now - t_scan).days if t_scan else None
     return {
+        "tenable_match": status,
+        "tenable_last_scan": _iso(t_scan),
+        "tenable_days_since_scan": t_days,
+        "tenable_scan_stale": None if t_days is None else t_days > stale_days,
+        "tenable_last_auth_scan": _iso(_parse_ts(trow.get("last_authenticated_scan_date"))) if trow else None,
         "id": asset.get("silk_id"),
         "name": asset.get("name"),
         "asset_type": asset.get("asset_type"),
@@ -98,7 +162,7 @@ def extract_asset_features(asset, stale_days=7, now=None):
         "last_seen": _iso(seen),
         "days_since_seen": days,
         "scan_stale": None if days is None else days > stale_days,  # None = undetermined
-        "open_findings_count": asset.get("open_findings_count"),
+        "open_findings_count": _int(asset.get("open_findings_count")),
     }
 
 
@@ -123,12 +187,33 @@ def format_asset_for_drata(a):
         "isActive": a["is_active"], "lastSeen": a["last_seen"],
         "daysSinceSeen": a["days_since_seen"], "scanStale": a["scan_stale"],
         "openFindingsCount": a["open_findings_count"],
+        "tenableMatch": a["tenable_match"], "tenableLastScan": a["tenable_last_scan"],
+        "tenableDaysSinceScan": a["tenable_days_since_scan"], "tenableScanStale": a["tenable_scan_stale"],
+        "tenableLastAuthenticatedScan": a["tenable_last_auth_scan"],
     }
 
 
-def build_payloads(joined, assets, stale_days=7, now=None):
-    """Returns (findings, asset_records, rejected). Records w/o a stable id are rejected, not dropped."""
-    findings, rejected = [], []
+def _split_duplicates(rows, key, label, rejected):
+    """Ids appearing more than once in the latest batch are rejected, never last-write-wins."""
+    counts = {}
+    for r in rows:
+        counts[key(r)] = counts.get(key(r), 0) + 1
+    keep = []
+    for r in rows:
+        if key(r) and counts[key(r)] > 1:
+            rejected.append({"reason": "duplicate %s id in latest batch" % label, "record": r})
+        else:
+            keep.append(r)
+    return keep
+
+
+def build_payloads(joined, assets, stale_days=7, now=None, tenable_assets=None):
+    """Returns (findings, asset_records, rejected). Records w/o a stable id, or with a duplicated
+    id, are rejected (and logged by the caller), not dropped or arbitrarily picked."""
+    rejected = []
+    joined = _split_duplicates(joined, lambda j: j["finding"].get("silk_id"), "finding", rejected)
+    assets = _split_duplicates(assets, lambda a: a.get("silk_id"), "asset", rejected)
+    findings = []
     for j in joined:
         feat = extract_finding_features(j["finding"], j["assets"], now)
         if not feat["id"]:
@@ -136,8 +221,9 @@ def build_payloads(joined, assets, stale_days=7, now=None):
         else:
             findings.append(format_finding_for_drata(feat))
     scans = []
+    tindex = index_tenable_assets(tenable_assets) if tenable_assets is not None else None
     for a in assets:
-        feat = extract_asset_features(a, stale_days, now)
+        feat = extract_asset_features(a, stale_days, now, tindex)
         if not feat["id"]:
             rejected.append({"reason": "asset missing silk_id", "record": a})
         else:

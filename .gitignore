@@ -6,3 +6,5 @@ dist/
 __pycache__/
 output/
 .databricks/
+local_data/
+.DS_Store

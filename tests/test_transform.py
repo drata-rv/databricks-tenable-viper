@@ -1,5 +1,9 @@
 from datetime import datetime, timezone
+import json
+import pathlib
 from unittest import mock
+
+import jsonschema
 
 from vipr_drata.db.drata_client import DrataClient
 from vipr_drata.db.queries import is_true, rows_to_records
@@ -90,3 +94,54 @@ def test_session_completes_only_when_clean():
     sess.post.side_effect = [_resp(400), _resp(200)]  # single-record batch fails, then cancel
     ok, failed, action = _client(sess).replace_via_session(1, 2, [{"id": "a"}], "s-2")
     assert action == "cancel" and failed
+
+
+def _schema(name):
+    return json.loads((pathlib.Path(__file__).parent.parent / "schemas" / name).read_text())
+
+
+def test_payloads_match_drata_schemas():
+    fs, sc, _ = build_payloads(
+        [{"finding": finding(open_cves='["CVE-2026-1"]'), "assets": [{"silk_id": "a1", "name": "h"}]},
+         {"finding": finding(silk_id="f2", tool_severity="", open_cves=None), "assets": []}],
+        [{"silk_id": "a1", "last_seen": "2026-09-30 00:00:00", "is_active": "true", "open_findings_count": "3"},
+         {"silk_id": "a2", "is_active": "false"}], 7, NOW)
+    for f in fs:
+        jsonschema.validate(f, _schema("vulnerability_findings.schema.json"))
+    for a in sc:
+        jsonschema.validate(a, _schema("asset_scan_coverage.schema.json"))
+    assert fs[0]["cves"] == ["CVE-2026-1"] and sc[0]["openFindingsCount"] == 3
+
+
+def test_severity_aliases_normalize():
+    f = extract_finding_features(finding(severity="Informational", tool_severity='{"tenable": "info"}'), [], NOW)
+    assert f["severity_changed"] is False
+
+
+def _run_sql_with(csv_chunks):
+    from databricks.sdk.service.sql import StatementState
+    from vipr_drata.db import queries
+
+    client = mock.Mock()
+    col = mock.Mock()
+    col.name = "a"
+    col2 = mock.Mock()
+    col2.name = "b"
+    resp = mock.Mock(statement_id="s")
+    resp.status.state = StatementState.SUCCEEDED
+    resp.manifest.schema.columns = [col, col2]
+    links = [mock.Mock(external_link="http://l/%d" % i) for i in range(len(csv_chunks))]
+    chunks = [mock.Mock(external_links=[l], next_chunk_index=i + 1 if i + 1 < len(links) else None)
+              for i, l in enumerate(links)]
+    resp.result = chunks[0]
+    client.statement_execution.execute_statement.return_value = resp
+    client.statement_execution.get_statement_result_chunk_n.side_effect = lambda sid, n: chunks[n]
+    with mock.patch.object(queries.requests, "get",
+                           side_effect=lambda url, timeout: mock.Mock(text=csv_chunks[int(url[-1])])):
+        return queries.run_sql(client, "w", "SELECT 1")
+
+
+def test_run_sql_multichunk_header_only_when_present():
+    # chunk 0 has a header, chunk 1 does not; "null" -> None
+    rows = _run_sql_with(["a,b\n1,2\n", "3,null\n"])
+    assert rows == [{"a": "1", "b": "2"}, {"a": "3", "b": None}]

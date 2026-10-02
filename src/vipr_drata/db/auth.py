@@ -23,9 +23,10 @@ def get_client_for_env(workspace):
     return WorkspaceClient(host=host, token=token)
 
 
-def drata_api_key(prod):
-    """Explicit sandbox/prod selection; prod never falls back to sandbox credentials."""
-    scope = scope_for("PROD" if prod else "TEST")
+def drata_api_key(prod, workspace="test"):
+    """Explicit sandbox/prod selection; prod never falls back to sandbox credentials.
+    Scope is the running workspace's (the only one the job principal can read)."""
+    scope = scope_for(workspace)
     if prod:
         return get_secret("drata-api-key-prod", scope=scope, env_var="DRATA_API_KEY_PROD")
     return get_secret("drata-api-key", scope=scope, env_var="DRATA_API_KEY")
