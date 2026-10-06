@@ -191,6 +191,13 @@
         "string",
         "null"
       ]
+    },
+    "toolSeverities": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "all tool ratings as tool=value, comma separated"
     }
   },
   "required": [

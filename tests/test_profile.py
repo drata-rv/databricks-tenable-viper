@@ -194,3 +194,39 @@ def test_crosstab_reveals_numeric_scale_across_findings():
     p, _ = profile(rows, [A()])
     assert p["raw_tool_severity"]["vipr_severity_by_tool_value"]["rapid7_insight_vm-1"] == {
         "2": {"low": 2}, "3": {"medium": 1}, "4": {"high": 2}, "5": {"critical": 1}, "1": {"low": 1}}
+
+
+def test_tool_severities_carries_every_raw_rating():
+    _, recs = profile([REAL_FINDING, F(silk_id="2", tool_severity='{"tenable_io":"High","rapid7_insight_vm-1":"3"}'),
+                       F(silk_id="3", tool_severity="{}")], [REAL_ASSET])
+    got = {r["sourceId"]: r["toolSeverities"] for r in recs if r["recordType"] == "finding"}
+    assert got == {REAL_FINDING["silk_id"]: "rapid7_insight_vm-1=2", "2": "rapid7_insight_vm-1=3, tenable_io=High", "3": None}
+
+
+@pytest.mark.parametrize("tool,scale,vipr,expected,direction", [
+    ("rapid7", {"2": "medium"}, "LOW", "medium", "downgraded"),
+    ("rapid7", {"2": "low"}, "LOW", "low", None),
+    ("rapid7", {}, "LOW", None, None),
+    ("rapid7", {"3": "high"}, "LOW", None, None),
+    ("tenable", {"2": "medium"}, "LOW", None, None),
+    ("RAPID7", {"2": "medium"}, "HIGH", "medium", "upgraded"),
+])
+def test_scanner_tool_and_scale_are_configurable(tool, scale, vipr, expected, direction):
+    f = extract_finding_features(dict(REAL_FINDING, severity=vipr), [], NOW, tool, scale)
+    assert f["scanner_severity"] == expected and f["severity_direction"] == direction
+    assert f["tool_severities"] == "rapid7_insight_vm-1=2"
+
+
+def test_cli_scanner_flags(tmp_path):
+    d = tmp_path / "d"
+    cli.main(["--local", "--local-data", str(d), "--output-dir", str(tmp_path / "o1")])
+    out = tmp_path / "o2"
+    rc = cli.main(["--local", "--local-data", str(d), "--output-dir", str(out), "--scanner-tool", "tenable",
+                   "--scanner-severity-map", '{"high": "critical"}'])
+    assert rc == 0
+    recs = {r["id"]: r for r in json.load(open(out / "records.json"))}
+    assert recs["finding:f-001"]["scannerSeverity"] == "critical" and recs["finding:f-001"]["toolSeverities"] == "tenable=high"
+    for bad in ('not json', '[1,2]', '{"1": "urgent"}'):
+        with pytest.raises(SystemExit) as e:
+            cli.main(["--local", "--local-data", str(d), "--output-dir", str(out), "--scanner-severity-map", bad])
+        assert e.value.code == 2

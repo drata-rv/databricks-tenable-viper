@@ -32,5 +32,8 @@ Set `DATABRICKS_*` and `VIPR_*_TABLE` in `.env`. Optional `TENABLE_ASSETS_TABLE`
 
 Deploy: bump `version` in `pyproject.toml`, then `databricks bundle deploy -t test|prod`. Prod needs `findings_table`, `assets_table`, `run_as` and `workspace.host` set.
 
+## Scanner comparison
+`scannerSeverity` is the `tool_severity` entry whose key contains `SCANNER_TOOL` (default `tenable`), compared with Vipr severity. Numeric tool values stay undetermined until `SCANNER_SEVERITY_MAP` maps them, e.g. `{"1":"low","2":"medium","3":"high","4":"critical"}`. Read the scale from `_profile.json` (`vipr_severity_by_tool_value`). `toolSeverities` always carries every raw tool rating (`rapid7_insight_vm-1=2`).
+
 ## Exit codes
 `0` ok, `1` push failures, `2` guard abort (reject ratio, test tables with `--drata-prod`).

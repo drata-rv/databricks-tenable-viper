@@ -12,7 +12,7 @@ from .etl.extract import extract_all, merge
 from .etl.local import load_local_tables
 from .etl.sample_data import write_sample_data
 from .profile import build_profile, summary
-from .transform import build_payloads
+from .transform import SEVERITY_ORDER, build_payloads
 
 
 def apply_env_pairs(argv):
@@ -44,6 +44,17 @@ def _has_tables(directory):
     return os.path.isdir(directory) and any(f.endswith((".csv", ".json")) for f in os.listdir(directory))
 
 
+def parse_scale(raw):
+    if not raw or not raw.strip():
+        return {}
+    try:
+        scale = json.loads(raw)
+    except ValueError:
+        return None
+    ok = isinstance(scale, dict) and all(str(v).lower() in SEVERITY_ORDER for v in scale.values())
+    return {str(k).strip(): str(v).lower() for k, v in scale.items()} if ok else None
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="vipr-drata")
     p.add_argument("--workspace", default=os.getenv("DATABRICKS_WORKSPACE", "test"), help="test|prod (Databricks source)")
@@ -55,6 +66,10 @@ def build_parser():
     p.add_argument("--push-mode", choices=["upsert", "session"], default=None,
                    help="upsert (default, never deletes) | session (atomic snapshot replace; hard-deletes records "
                         "not in this run; refused if anything was rejected). Env: DRATA_PUSH_MODE")
+    p.add_argument("--scanner-tool", default=os.getenv("SCANNER_TOOL", "tenable"),
+                   help="substring of the tool_severity key compared with Vipr severity (default tenable)")
+    p.add_argument("--scanner-severity-map", default=os.getenv("SCANNER_SEVERITY_MAP", ""),
+                   help='JSON map of raw tool values to info|low|medium|high|critical, e.g. {"1":"low","2":"medium"}')
     p.add_argument("--max-reject-ratio", type=float, default=float(os.getenv("MAX_REJECT_RATIO", "-1")),
                    help="abort before pushing if rejected/total exceeds this (default 0.05; disabled with --local, "
                         "whose sample data has deliberate rejects)")
@@ -92,6 +107,9 @@ def main(argv=None):
     push_mode = args.push_mode or os.getenv("DRATA_PUSH_MODE") or "upsert"
     if push_mode not in ("upsert", "session"):
         p.error("invalid push mode %r (DRATA_PUSH_MODE): use upsert or session" % push_mode)
+    scale = parse_scale(args.scanner_severity_map)
+    if scale is None:
+        p.error("--scanner-severity-map must be a JSON object mapping to info|low|medium|high|critical")
     if args.local and args.drata_prod:
         p.error("--local never pushes to Drata prod; drop --drata-prod")
     if args.local and not args.push:
@@ -123,7 +141,8 @@ def main(argv=None):
         tables = extract_all(get_client_for_env(args.workspace), args.warehouse_id)
     joined, assets = merge(tables)
     findings, scans, rejected = build_payloads(joined, assets, args.stale_days,
-                                               tenable_assets=tables.get("tenable_assets"))
+                                               tenable_assets=tables.get("tenable_assets"),
+                                               scanner_tool=args.scanner_tool, scanner_scale=scale)
     records = findings + scans
     state.update(records=records, rejected=rejected)
 

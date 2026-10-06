@@ -88,15 +88,21 @@ def _int(v):
         return None
 
 
-def scanner_severity(tool_severity, tool="tenable"):
-    vals = {_sev(v) for k, v in _parse_map(tool_severity).items() if tool in k.lower()}
+def scanner_severity(tool_severity, tool="tenable", scale=None):
+    scale = scale or {}
+    vals = {_sev(scale.get(str(v).strip(), v)) for k, v in _parse_map(tool_severity).items() if tool.lower() in k.lower()}
     return vals.pop() if len(vals) == 1 and None not in vals else None
 
 
-def extract_finding_features(finding, assets, now=None):
+def tool_severities(tool_severity):
+    pairs = sorted((str(k).strip(), str(v).strip()) for k, v in _parse_map(tool_severity).items())
+    return ", ".join("%s=%s" % p for p in pairs) or None
+
+
+def extract_finding_features(finding, assets, now=None, scanner_tool="tenable", scanner_scale=None):
     now = now or datetime.now(timezone.utc)
     vipr = _sev(finding.get("severity"))
-    scan = scanner_severity(finding.get("tool_severity"))
+    scan = scanner_severity(finding.get("tool_severity"), scanner_tool, scanner_scale)
     is_open = _tri(finding.get("open"))
     has_ticket = _tri(finding.get("has_ticket"))
     sla = _parse_ts(finding.get("sla_date"))
@@ -114,6 +120,7 @@ def extract_finding_features(finding, assets, now=None):
         "name": finding.get("display_name"),
         "vipr_severity": vipr,
         "scanner_severity": scan,
+        "tool_severities": tool_severities(finding.get("tool_severity")),
         "severity_changed": changed,
         "severity_direction": (
             None if not changed else
@@ -247,6 +254,7 @@ def format_finding_for_drata(f):
         "displayName": f["name"] or f["display_id"] or f["id"],
         "displayId": f["display_id"], "name": f["name"],
         "viprSeverity": f["vipr_severity"], "scannerSeverity": f["scanner_severity"],
+        "toolSeverities": f["tool_severities"],
         "severityChanged": f["severity_changed"], "severityDirection": f["severity_direction"],
         "open": f["open"], "ignored": f["ignored"], "hasTicket": f["has_ticket"],
         "missingTicket": f["missing_ticket"], "slaDate": f["sla_date"],
@@ -294,13 +302,14 @@ def _split_duplicates(rows, key, label, rejected):
     return keep
 
 
-def build_payloads(joined, assets, stale_days=7, now=None, tenable_assets=None):
+def build_payloads(joined, assets, stale_days=7, now=None, tenable_assets=None, scanner_tool="tenable",
+                   scanner_scale=None):
     rejected = []
     joined = _split_duplicates(joined, lambda j: j["finding"].get("silk_id"), "finding", rejected)
     assets = _split_duplicates(assets, lambda a: a.get("silk_id"), "asset", rejected)
     findings = []
     for j in joined:
-        feat = extract_finding_features(j["finding"], j["assets"], now)
+        feat = extract_finding_features(j["finding"], j["assets"], now, scanner_tool, scanner_scale)
         if not feat["id"]:
             rejected.append({"resource": "findings", "reason": "missing silk_id", "record": j["finding"]})
         else:
