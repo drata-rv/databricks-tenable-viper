@@ -39,7 +39,7 @@ def test_budget_exhaustion():
     assert _client(s)._post("u", {}) == (False, "HTTP 500")
     s.post.side_effect = [requests.ConnectionError("boom")] * 4
     ok, err = _client(s)._post("u", {})
-    assert not ok and "boom" in err
+    assert not ok and err == "ConnectionError"
 
 
 def test_network_error_then_success():
@@ -136,3 +136,23 @@ def test_prod_key_never_falls_back_to_sandbox(monkeypatch):
         drata_api_key(True)
     monkeypatch.setenv("DRATA_API_KEY_PROD", "prod-key")
     assert drata_api_key(True) == "prod-key"
+
+
+def test_interrupt_stops_queued_batches_and_cancels_session_once():
+    import threading
+    started, calls = threading.Event(), []
+    s = mock.Mock()
+
+    def post(url, json, timeout):
+        calls.append(json)
+        if "data" in json and not started.is_set():
+            started.set()
+            raise KeyboardInterrupt
+        return _resp(200)
+
+    s.post.side_effect = post
+    c = _client(s, batch_size=1)
+    with pytest.raises(KeyboardInterrupt):
+        c.replace_via_session(1, 2, [{"id": str(i)} for i in range(200)], "s-9")
+    assert sum(1 for x in calls if x == {"action": "cancel"}) == 1
+    assert len(calls) < 20 and not any(x == {"action": "complete"} for x in calls)

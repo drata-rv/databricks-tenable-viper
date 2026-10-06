@@ -1,7 +1,7 @@
 import re
 from collections import Counter
 
-from .transform import _SEV_ALIASES, SEVERITY_ORDER, _parse_ts, asset_name, parse_map
+from .transform import _SEV_ALIASES, SEVERITY_ORDER, _parse_ts, asset_name, is_empty_text, parse_map
 
 TOP = 20
 SAMPLES = 3
@@ -79,7 +79,7 @@ def _asset_resolution(joined, assets):
                 unmatched.append(str(aid)[:100])
         elif n > 1:
             out["conflicting_duplicates"] += 1
-        elif _empty(j["assets"][0].get("name")) or str(j["assets"][0]["name"]).strip().lower() == "null":
+        elif is_empty_text(j["assets"][0].get("name")):
             out["name_from_hostname" if asset_name(j["assets"][0]) else "asset_name_null"] += 1
         else:
             out["resolved"] += 1

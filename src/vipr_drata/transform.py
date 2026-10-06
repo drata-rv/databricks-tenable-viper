@@ -84,19 +84,21 @@ def _tri(v):
 def _int(v):
     try:
         return int(float(v))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
 def scanner_severity(tool_severity, tool="tenable", scale=None):
     scale = scale or {}
-    vals = {_sev(scale.get(str(v).strip(), v)) for k, v in _parse_map(tool_severity).items() if tool.lower() in k.lower()}
+    tool = (tool or "").strip().lower() or "tenable"
+    vals = {_sev(scale.get(str(v).strip().lower(), v)) for k, v in _parse_map(tool_severity).items() if tool in k.lower()}
     return vals.pop() if len(vals) == 1 and None not in vals else None
 
 
 def tool_severities(tool_severity):
-    pairs = sorted((str(k).strip(), str(v).strip()) for k, v in _parse_map(tool_severity).items())
-    return ", ".join("%s=%s" % p for p in pairs) or None
+    pairs = sorted((str(k).strip(), "null" if v is None else str(v).strip()) for k, v in _parse_map(tool_severity).items())
+    text = ", ".join("%s=%s" % p for p in pairs)
+    return (text[:997] + "...") if len(text) > 1000 else (text or None)
 
 
 def extract_finding_features(finding, assets, now=None, scanner_tool="tenable", scanner_scale=None):
@@ -153,15 +155,15 @@ def _norm_mac(m):
 
 def asset_name(asset):
     name = asset.get("name")
-    if not _is_empty_text(name):
+    if not is_empty_text(name):
         return str(name).strip()
     for h in _parse_list(asset.get("hostnames")):
-        if not _is_empty_text(h):
+        if not is_empty_text(h):
             return str(h).strip()
     return None
 
 
-def _is_empty_text(v):
+def is_empty_text(v):
     return v is None or str(v).strip().lower() in ("", "null", "-")
 
 

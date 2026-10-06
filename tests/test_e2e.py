@@ -59,8 +59,7 @@ def test_prod_flag_uses_prod_key_and_never_sandbox(monkeypatch, tmp_path):
     args = _env(monkeypatch, tmp_path)
     monkeypatch.setenv("DRATA_API_KEY", "sandbox-key")
     with mock.patch.object(cli, "get_client_for_env"), mock.patch("vipr_drata.etl.extract.run_sql", fake_run_sql):
-        with pytest.raises(RuntimeError):
-            cli.main(args + ["--drata-prod"])
+        assert cli.main(args + ["--drata-prod"]) == 2
         monkeypatch.setenv("DRATA_API_KEY_PROD", "prod-key")
         with mock.patch.object(cli, "DrataClient") as DC:
             DC.return_value.upsert.return_value = (1, [])

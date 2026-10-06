@@ -3,8 +3,9 @@
 Databricks Vipr tables -> one Drata Custom Connection. Each record has `recordType` `finding` or `asset`; ids are `finding:<silk_id>` / `asset:<silk_id>`.
 
 ## Setup
+Python 3.10+. Run everything from the repo root; `.env` lives there.
 ```
-python3.12 -m venv .venv && . .venv/bin/activate
+python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'
 cp .env.example .env
 pytest
@@ -28,7 +29,7 @@ Output in `./output`: `records.json`, `_rejected.json`, `_profile.json` (`_faile
 4. Prod: `DRATA_API_KEY_PROD` and `--drata-prod`.
 
 ## Databricks
-Set `DATABRICKS_*` and `VIPR_*_TABLE` in `.env`. Optional `TENABLE_ASSETS_TABLE` adds Tenable scan evidence.
+Set `DATABRICKS_{HOST,TOKEN,CLIENT_ID,CLIENT_SECRET}_{TEST|PROD}` (chosen by `--workspace`) and `VIPR_*_TABLE` in `.env`. Optional `TENABLE_ASSETS_TABLE` adds Tenable scan evidence.
 
 Deploy: bump `version` in `pyproject.toml`, then `databricks bundle deploy -t test|prod`. Prod needs `findings_table`, `assets_table`, `run_as` and `workspace.host` set.
 
@@ -36,4 +37,5 @@ Deploy: bump `version` in `pyproject.toml`, then `databricks bundle deploy -t te
 `scannerSeverity` is the `tool_severity` entry whose key contains `SCANNER_TOOL` (default `tenable`), compared with Vipr severity. Numeric tool values stay undetermined until `SCANNER_SEVERITY_MAP` maps them, e.g. `{"1":"low","2":"medium","3":"high","4":"critical"}`. Read the scale from `_profile.json` (`vipr_severity_by_tool_value`). `toolSeverities` always carries every raw tool rating (`rapid7_insight_vm-1=2`).
 
 ## Exit codes
-`0` ok, `1` push failures, `2` guard abort (reject ratio, test tables with `--drata-prod`).
+`0` ok, `1` push or Databricks extraction failure, `2` config or guard abort (missing settings, reject ratio, test tables with `--drata-prod`).
+Stale `_failed.json` and `partial.json` are deleted at the start of each run; `partial.json` only appears after a crash.

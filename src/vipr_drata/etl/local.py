@@ -3,6 +3,7 @@ import json
 import os
 
 from ..db.queries import _clean
+from ..db.secrets import ConfigError
 from .extract import TABLE_REGISTRY
 
 
@@ -35,7 +36,7 @@ def load_local_tables(directory):
                      if os.path.exists(p)), None)
         if path is None:
             if spec.required:
-                raise FileNotFoundError("missing %s.csv/.json in %s (delete the directory to regenerate synthetic data)"
+                raise ConfigError("missing %s.csv/.json in %s (delete the directory to regenerate synthetic data)"
                                         % (spec.label, directory))
             continue
         out[spec.label] = _latest_batch(_read(path))

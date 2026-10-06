@@ -20,6 +20,10 @@ variables:
     default: ""
   push_mode:
     default: upsert
+  scanner_tool:
+    default: tenable
+  scanner_severity_map:
+    default: ""
   tenable_assets_table:
     default: ""
 
@@ -58,6 +62,10 @@ resources:
               - DRATA_PROD=${var.drata_prod}
               - --env
               - DRATA_PUSH_MODE=${var.push_mode}
+              - --env
+              - SCANNER_TOOL=${var.scanner_tool}
+              - --env
+              - SCANNER_SEVERITY_MAP=${var.scanner_severity_map}
               - --env
               - DRATA_CONNECTION_ID=${var.connection_id}
               - --env

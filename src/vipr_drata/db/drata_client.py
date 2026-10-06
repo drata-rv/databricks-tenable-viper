@@ -8,6 +8,9 @@ import requests
 
 MAX_BODY_BYTES = 4 * 1024 * 1024  # Drata limit 5 MB
 RECORD_ERRORS = {400, 413, 422}  # other 4xx are request-level: stop sending
+PERMANENT = (requests.exceptions.InvalidHeader, requests.exceptions.InvalidURL,
+             requests.exceptions.InvalidSchema, requests.exceptions.MissingSchema)
+INTERRUPTED = "interrupted"
 MAX_RETRY_AFTER = 120.0
 
 
@@ -60,26 +63,33 @@ class DrataClient:
             return default
         return min(v, MAX_RETRY_AFTER)
 
-    def _post(self, url, body):
+    def _post(self, url, body, force=False):
         errors = limits = 0
+        max_errors = 1 if force else self.max_errors
+        max_limits = 1 if force else self.max_rate_limits
         while True:
+            if self._fatal == INTERRUPTED and not force:
+                return False, INTERRUPTED
             try:
                 resp = self._session().post(url, json=body, timeout=60)
+            except PERMANENT as e:
+                self._fatal = "request rejected locally: %s" % type(e).__name__
+                return False, self._fatal
             except requests.RequestException as e:
                 errors += 1
-                if errors > self.max_errors:
-                    return False, str(e)
+                if errors > max_errors:
+                    return False, type(e).__name__
                 time.sleep(self.backoff * errors)
                 continue
             code = resp.status_code
             if code == 429:
                 limits += 1
-                if limits > self.max_rate_limits:
+                if limits > max_limits:
                     return False, "rate limited"
                 time.sleep(self._retry_after(resp, self.backoff * limits))
             elif code >= 500:
                 errors += 1
-                if errors > self.max_errors:
+                if errors > max_errors:
                     return False, "HTTP %s" % code
                 time.sleep(self.backoff * errors)
             elif code >= 400:
@@ -113,10 +123,16 @@ class DrataClient:
         self._fatal = None
         ok, failed = 0, []
         batches = list(chunk_records(records, self.batch_size))
-        with ThreadPoolExecutor(max_workers=self.workers) as ex:
+        ex = ThreadPoolExecutor(max_workers=self.workers)
+        try:
             for g, f in ex.map(lambda b: self._push_batch(url, b), batches):
                 ok += g
                 failed.extend(f)
+        except BaseException:
+            self._fatal = INTERRUPTED
+            ex.shutdown(wait=False, cancel_futures=True)
+            raise
+        ex.shutdown()
         return ok, failed
 
     def upsert(self, connection_id, resource_id, records):
@@ -130,7 +146,7 @@ class DrataClient:
         try:
             ok, failed = self._push_all("%s/sessions/%s" % (base, session_id), records)
         except BaseException:
-            self._post("%s/sessions/%s/actions" % (base, session_id), {"action": "cancel"})
+            self._post("%s/sessions/%s/actions" % (base, session_id), {"action": "cancel"}, force=True)
             raise
         action = "complete" if not failed else "cancel"
         done, err = self._post("%s/sessions/%s/actions" % (base, session_id), {"action": action})

@@ -1,6 +1,10 @@
 import os
 
 
+class ConfigError(RuntimeError):
+    pass
+
+
 def on_databricks():
     return bool(os.getenv("DATABRICKS_RUNTIME_VERSION"))
 
@@ -10,14 +14,14 @@ def get_secret(name, *, scope=None, env_var=None, required=True):
         try:
             from databricks.sdk import WorkspaceClient
 
-            return WorkspaceClient().dbutils.secrets.get(scope=scope, key=name)
+            return WorkspaceClient().dbutils.secrets.get(scope=scope, key=name).strip()
         except Exception:
             if required:
                 raise
             return None
-    value = os.getenv(env_var or name.upper().replace("-", "_"))
+    value = (os.getenv(env_var or name.upper().replace("-", "_")) or "").strip()
     if value:
         return value
     if required:
-        raise RuntimeError("Missing secret %r (env %r)" % (name, env_var))
+        raise ConfigError("Missing secret %r (env %r)" % (name, env_var))
     return None

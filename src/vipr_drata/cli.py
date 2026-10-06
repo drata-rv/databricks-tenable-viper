@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from .db.auth import drata_api_key, get_client_for_env
 from .db.drata_client import DrataClient
 from .db.queries import is_true
+from .db.secrets import ConfigError
 from .etl.extract import extract_all, merge
 from .etl.local import load_local_tables
 from .etl.sample_data import write_sample_data
@@ -44,6 +45,16 @@ def _has_tables(directory):
     return os.path.isdir(directory) and any(f.endswith((".csv", ".json")) for f in os.listdir(directory))
 
 
+def _env_number(name, default, cast):
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return cast(raw)
+    except ValueError:
+        raise ConfigError("%s must be a number, got %r" % (name, raw))
+
+
 def parse_scale(raw):
     if not raw or not raw.strip():
         return {}
@@ -52,7 +63,7 @@ def parse_scale(raw):
     except ValueError:
         return None
     ok = isinstance(scale, dict) and all(str(v).lower() in SEVERITY_ORDER for v in scale.values())
-    return {str(k).strip(): str(v).lower() for k, v in scale.items()} if ok else None
+    return {str(k).strip().lower(): str(v).lower() for k, v in scale.items()} if ok else None
 
 
 def build_parser():
@@ -60,17 +71,17 @@ def build_parser():
     p.add_argument("--workspace", default=os.getenv("DATABRICKS_WORKSPACE", "test"), help="test|prod (Databricks source)")
     p.add_argument("--warehouse-id", default=os.getenv("DATABRICKS_WAREHOUSE_ID"))
     p.add_argument("--output-dir", default=os.getenv("OUTPUT_DIR", "output"))
-    p.add_argument("--stale-days", type=int, default=int(os.getenv("SCAN_STALE_DAYS", "7")))
+    p.add_argument("--stale-days", type=int, default=_env_number("SCAN_STALE_DAYS", 7, int))
     p.add_argument("--drata-prod", action="store_true", default=is_true(os.getenv("DRATA_PROD")),
                    help="push to Drata prod tenant (separate credentials, no sandbox fallback)")
     p.add_argument("--push-mode", choices=["upsert", "session"], default=None,
                    help="upsert (default, never deletes) | session (atomic snapshot replace; hard-deletes records "
                         "not in this run; refused if anything was rejected). Env: DRATA_PUSH_MODE")
-    p.add_argument("--scanner-tool", default=os.getenv("SCANNER_TOOL", "tenable"),
+    p.add_argument("--scanner-tool", default=os.getenv("SCANNER_TOOL") or "tenable",
                    help="substring of the tool_severity key compared with Vipr severity (default tenable)")
     p.add_argument("--scanner-severity-map", default=os.getenv("SCANNER_SEVERITY_MAP", ""),
                    help='JSON map of raw tool values to info|low|medium|high|critical, e.g. {"1":"low","2":"medium"}')
-    p.add_argument("--max-reject-ratio", type=float, default=float(os.getenv("MAX_REJECT_RATIO", "-1")),
+    p.add_argument("--max-reject-ratio", type=float, default=_env_number("MAX_REJECT_RATIO", -1.0, float),
                    help="abort before pushing if rejected/total exceeds this (default 0.05; disabled with --local, "
                         "whose sample data has deliberate rejects)")
     p.add_argument("--allow-test-source-with-prod", action="store_true",
@@ -87,12 +98,21 @@ def build_parser():
 
 
 def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        return _main(list(sys.argv[1:] if argv is None else argv))
+    except ConfigError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 2
+
+
+def _main(argv):
     if not os.getenv("VIPR_DRATA_NO_DOTENV"):
         try:
-            from dotenv import load_dotenv
+            from dotenv import find_dotenv, load_dotenv
 
-            load_dotenv()
+            path = find_dotenv(usecwd=True) or find_dotenv()
+            if path:
+                load_dotenv(path)
         except ImportError:
             pass
     # --env overrides .env; must run before parser env defaults
@@ -127,6 +147,10 @@ def main(argv=None):
             p.error("refusing to push to Drata PROD from test-catalog tables (%s); set prod tables or pass "
                     "--allow-test-source-with-prod" % ", ".join(test_src))
 
+    args.scanner_tool = (args.scanner_tool or "").strip() or "tenable"
+    for stale in ("_failed.json", "partial.json"):
+        if os.path.exists(os.path.join(args.output_dir, stale)):
+            os.remove(os.path.join(args.output_dir, stale))
     state = {"incomplete": True}
     atexit.register(lambda: state.get("incomplete") and len(state) > 1 and
                     _dump(os.path.join(args.output_dir, "partial.json"), state))
@@ -138,7 +162,13 @@ def main(argv=None):
         tables = load_local_tables(args.local_data)
         print("LOCAL MODE: tables from %s (no Databricks)" % args.local_data)
     else:
-        tables = extract_all(get_client_for_env(args.workspace), args.warehouse_id)
+        try:
+            tables = extract_all(get_client_for_env(args.workspace), args.warehouse_id)
+        except ConfigError:
+            raise
+        except Exception as e:
+            print("error: Databricks extraction failed: %s: %s" % (type(e).__name__, str(e)[:300]), file=sys.stderr)
+            return 1
     joined, assets = merge(tables)
     findings, scans, rejected = build_payloads(joined, assets, args.stale_days,
                                                tenable_assets=tables.get("tenable_assets"),
@@ -166,6 +196,7 @@ def main(argv=None):
     if total and len(rejected) / total > args.max_reject_ratio:
         print("ABORT: rejected ratio %.1f%% > %.1f%%; nothing pushed" %
               (100.0 * len(rejected) / total, 100.0 * args.max_reject_ratio), file=sys.stderr)
+        state["incomplete"] = False
         return 2
 
     print("Drata tenant: %s | push mode: %s" % ("PROD" if args.drata_prod else "sandbox", push_mode))
