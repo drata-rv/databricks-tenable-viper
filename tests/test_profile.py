@@ -153,3 +153,44 @@ def test_null_flags_stay_null():
     assert f["ignored"] is None
     _, sc, _ = build_payloads([], [A(is_active=None)], 7, NOW)
     assert sc[0]["isActive"] is None
+
+
+REAL_FINDING = F(silk_id="nationwide____DedupedTask____022a", severity="LOW",
+                 tool_severity='{"rapid7_insight_vm-1":"2"}', open_cves=None, last_seen=None,
+                 asset_silk_id="nationwide____DedupedHostAsset____9fbd")
+REAL_ASSET = A(silk_id="nationwide____DedupedHostAsset____9fbd", name=None,
+               hostnames='["lapp000626","lapp000626"]', mac_addresses='["00:50:56:91:33:bf"]')
+
+
+def test_real_rapid7_record_shape():
+    p, recs = profile([REAL_FINDING], [REAL_ASSET])
+    f = next(r for r in recs if r["recordType"] == "finding")
+    a = next(r for r in recs if r["recordType"] == "asset")
+    assert f["viprSeverity"] == "low" and f["scannerSeverity"] is None and f["severityChanged"] is None
+    assert f["lastSeen"] is None and f["cves"] == [] and f["slaBreached"] is True
+    assert f["assetName"] == "lapp000626" and a["name"] == "lapp000626" and a["displayName"] == "lapp000626"
+    assert p["raw_tool_severity"]["keys"] == {"rapid7_insight_vm-1": 1}
+    assert p["raw_tool_severity"]["vipr_severity_by_tool_value"] == {"rapid7_insight_vm-1": {"2": {"low": 1}}}
+    assert p["raw_asset_resolution"] == {"name_from_hostname": 1}
+
+
+@pytest.mark.parametrize("name", [None, "", "null", "NULL", " - "])
+def test_null_like_asset_names_fall_back_to_hostname(name):
+    _, recs = profile([REAL_FINDING], [dict(REAL_ASSET, name=name)])
+    assert next(r for r in recs if r["recordType"] == "finding")["assetName"] == "lapp000626"
+
+
+def test_real_asset_name_wins_and_no_hostname_stays_null():
+    _, recs = profile([REAL_FINDING], [dict(REAL_ASSET, name="Server-1")])
+    assert next(r for r in recs if r["recordType"] == "finding")["assetName"] == "Server-1"
+    _, recs = profile([REAL_FINDING], [dict(REAL_ASSET, hostnames="[]")])
+    assert next(r for r in recs if r["recordType"] == "finding")["assetName"] is None
+
+
+def test_crosstab_reveals_numeric_scale_across_findings():
+    rows = [F(silk_id=str(i), severity=sev, tool_severity='{"rapid7_insight_vm-1":"%s"}' % val)
+            for i, (sev, val) in enumerate([("LOW", "2"), ("LOW", "2"), ("MEDIUM", "3"), ("HIGH", "4"), ("HIGH", "4"),
+                                            ("CRITICAL", "5"), ("LOW", "1")])]
+    p, _ = profile(rows, [A()])
+    assert p["raw_tool_severity"]["vipr_severity_by_tool_value"]["rapid7_insight_vm-1"] == {
+        "2": {"low": 2}, "3": {"medium": 1}, "4": {"high": 2}, "5": {"critical": 1}, "1": {"low": 1}}

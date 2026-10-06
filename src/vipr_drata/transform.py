@@ -132,7 +132,7 @@ def extract_finding_features(finding, assets, now=None):
         "cves": _parse_list(finding.get("open_cves")),
         "asset_silk_id": finding.get("asset_silk_id"),
         "asset_resolved": asset is not None,
-        "asset_name": asset.get("name") if asset else None,
+        "asset_name": asset_name(asset) if asset else None,
     }
 
 
@@ -142,6 +142,20 @@ GENERIC_HOSTNAMES = {"localhost", "localhost.localdomain", "ubuntu", "debian", "
 
 def _norm_mac(m):
     return "".join(ch for ch in str(m).lower() if ch in "0123456789abcdef")
+
+
+def asset_name(asset):
+    name = asset.get("name")
+    if not _is_empty_text(name):
+        return str(name).strip()
+    for h in _parse_list(asset.get("hostnames")):
+        if not _is_empty_text(h):
+            return str(h).strip()
+    return None
+
+
+def _is_empty_text(v):
+    return v is None or str(v).strip().lower() in ("", "null", "-")
 
 
 def index_tenable_assets(tenable_assets):
@@ -216,7 +230,7 @@ def extract_asset_features(asset, stale_days=7, now=None, tenable_index=None):
         "tenable_scan_stale": None if t_scan is None else (now - t_scan) > limit,
         "tenable_last_auth_scan": _iso(_parse_ts(trow.get("last_authenticated_scan_date"))) if trow else None,
         "id": asset.get("silk_id"),
-        "name": asset.get("name"),
+        "name": asset_name(asset),
         "asset_type": asset.get("asset_type"),
         "is_active": _tri(asset.get("is_active")),
         "last_seen": _iso(seen),
