@@ -166,3 +166,21 @@ def test_env_example_covers_every_env_var_the_code_reads():
     internal = {"VIPR_DRATA_NO_DOTENV", "DATABRICKS_RUNTIME_VERSION", "DATABRICKS_SECRET_SCOPE"}
     missing = sorted(k for k in read - internal if not re.search(r"^%s=" % k, env, flags=re.M))
     assert not missing, missing
+
+
+def test_bundle_defaults_match_the_code_defaults():
+    yml = (ROOT / "databricks.yml").read_text()
+    default = lambda name: re.search(r"^  %s:\n    default: \"?([^\"\n]*)\"?$" % name, yml, flags=re.M).group(1)
+    args = cli.build_parser().parse_args([])
+    assert default("asset_buckets") == str(args.asset_buckets)
+    assert default("closed_lookback_days") == str(args.closed_lookback_days)
+    assert default("max_source_age_days") == str(args.max_source_age_days)
+    assert default("max_record_bytes") == str(args.max_record_bytes)
+    assert default("min_findings") == str(args.min_findings) and default("min_assets") == str(args.min_assets)
+    assert default("scanner_tool") == args.scanner_tool and default("finding_lane_buckets") == args.finding_lane_buckets == ""
+    assert default("push_mode") == "session" and args.push_mode is None
+    env = (ROOT / ".env.example").read_text()
+    for key, value in (("ASSET_BUCKETS", args.asset_buckets), ("CLOSED_LOOKBACK_DAYS", args.closed_lookback_days),
+                       ("MAX_SOURCE_AGE_DAYS", args.max_source_age_days), ("MAX_RECORD_BYTES", args.max_record_bytes),
+                       ("MIN_FINDINGS", args.min_findings), ("MIN_ASSETS", args.min_assets), ("DRATA_PUSH_MODE", "session")):
+        assert re.search(r"^%s=%s$" % (key, value), env, flags=re.M), key

@@ -23,7 +23,7 @@ variables:
   finding_lane_buckets:
     default: ""
   asset_buckets:
-    default: "16"
+    default: "4"
   closed_lookback_days:
     default: "90"
   max_source_age_days:
