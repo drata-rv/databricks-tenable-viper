@@ -21,7 +21,14 @@ def local(tmp_path, *extra):
     return cli.main(["--local", "--local-data", str(tmp_path / "d"), "--output-dir", str(tmp_path / "o")] + list(extra))
 
 
-def test_missing_databricks_config_is_a_clean_exit_2(capsys):
+def test_missing_databricks_config_is_a_clean_exit_2(monkeypatch, capsys):
+    assert cli.main(["--dry-run", "--warehouse-id", "w"]) == 2
+    assert "missing source table setting(s): VIPR_FINDINGS_TABLE, VIPR_ASSETS_TABLE" in capsys.readouterr().err
+    monkeypatch.setenv("VIPR_FINDINGS_TABLE", "c.s.f")
+    monkeypatch.setenv("VIPR_ASSETS_TABLE", "  ")
+    assert cli.main(["--dry-run", "--warehouse-id", "w"]) == 2
+    assert "VIPR_ASSETS_TABLE" in capsys.readouterr().err and "VIPR_FINDINGS_TABLE" not in capsys.readouterr().err
+    monkeypatch.setenv("VIPR_ASSETS_TABLE", "c.s.a")
     assert cli.main(["--dry-run", "--warehouse-id", "w"]) == 2
     err = capsys.readouterr().err
     assert "error: Missing secret" in err and "Traceback" not in err
@@ -152,7 +159,9 @@ def test_bundle_passes_every_job_setting_the_code_reads():
     env = (ROOT / ".env.example").read_text()
     passed = set(re.findall(r"^\s+- ([A-Z][A-Z0-9_]+)=\$\{var\.", yml, flags=re.M))
     assert {"SCANNER_TOOL", "SCANNER_SEVERITY_MAP", "DRATA_PUSH_MODE", "DRATA_CONNECTION_ID", "DRATA_RESOURCE_ID",
-            "VIPR_FINDINGS_TABLE", "VIPR_ASSETS_TABLE", "TENABLE_ASSETS_TABLE"} <= passed
+            "VIPR_FINDINGS_TABLE", "VIPR_ASSETS_TABLE", "TENABLE_ASSETS_TABLE", "FINDING_LANE_BUCKETS", "ASSET_BUCKETS",
+            "CLOSED_LOOKBACK_DAYS", "MAX_SOURCE_AGE_DAYS", "MAX_RECORD_BYTES", "MIN_FINDINGS", "MIN_ASSETS",
+            "SCAN_STALE_DAYS", "MAX_REJECT_RATIO", "DRATA_PROD"} <= passed
     assert all(re.search(r"^%s=" % k, env, flags=re.M) for k in passed)
     for var in re.findall(r"\$\{var\.(\w+)\}", yml):
         assert re.search(r"^  %s:\n" % var, yml, flags=re.M), var
@@ -179,8 +188,20 @@ def test_bundle_defaults_match_the_code_defaults():
     assert default("min_findings") == str(args.min_findings) and default("min_assets") == str(args.min_assets)
     assert default("scanner_tool") == args.scanner_tool and default("finding_lane_buckets") == args.finding_lane_buckets == ""
     assert default("push_mode") == "session" and args.push_mode is None
+    assert default("scan_stale_days") == str(args.stale_days) and default("max_reject_ratio") == ""
+    assert re.search(r"^      max_concurrent_runs: 1$", yml, flags=re.M)
     env = (ROOT / ".env.example").read_text()
     for key, value in (("ASSET_BUCKETS", args.asset_buckets), ("CLOSED_LOOKBACK_DAYS", args.closed_lookback_days),
                        ("MAX_SOURCE_AGE_DAYS", args.max_source_age_days), ("MAX_RECORD_BYTES", args.max_record_bytes),
                        ("MIN_FINDINGS", args.min_findings), ("MIN_ASSETS", args.min_assets), ("DRATA_PUSH_MODE", "session")):
         assert re.search(r"^%s=%s$" % (key, value), env, flags=re.M), key
+
+
+def test_every_tunable_the_cli_reads_reaches_the_job():
+    code = (ROOT / "src" / "vipr_drata" / "cli.py").read_text()
+    read = set(re.findall(r'_env_(?:number|str)\(\s*"([A-Z][A-Z0-9_]+)"', code)) | set(re.findall(r'getenv\(\s*"([A-Z][A-Z0-9_]+)"', code))
+    job_only_skipped = {"OUTPUT_DIR", "LOCAL_DATA_DIR", "LOCAL_ROWS", "DATABRICKS_WORKSPACE", "DATABRICKS_WAREHOUSE_ID", "DRATA_API_BASE",
+                        "VIPR_DRATA_NO_DOTENV"}
+    yml = (ROOT / "databricks.yml").read_text()
+    passed = set(re.findall(r"^\s+- ([A-Z][A-Z0-9_]+)=\$\{var\.", yml, flags=re.M))
+    assert not sorted(k for k in read - job_only_skipped - passed if not k.startswith("DRATA_API_KEY")), "not passed to the job"

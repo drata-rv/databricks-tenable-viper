@@ -350,62 +350,89 @@ def test_large_records_are_packed_under_the_request_cap():
     assert max(sizes) <= 4 * 1024 * 1024 + 20 and sess.post.call_count >= 3
 
 
-def test_stale_in_progress_sessions_are_cancelled_before_staging():
+def _sid(delta):
+    return "vipr-" + (datetime.now(timezone.utc) - delta).strftime("%Y%m%dT%H%M%S")
+
+
+def _posted(sess):
+    return [(c.args[0].rsplit("/sessions/", 1)[1] if "/sessions/" in c.args[0] else "records", sent(c))
+            for c in sess.post.call_args_list]
+
+
+def test_only_old_sessions_of_this_tool_are_cancelled_before_staging():
+    old, recent = _sid(timedelta(days=1)), _sid(timedelta(minutes=10))
     sess = mock.Mock()
-    sess.get.return_value = _resp(200, [{"sessionId": "old-1"}, {"id": "old-2"}, {"sessionId": "mine"}])
+    sess.get.return_value = _resp(200, [{"sessionId": old}, {"id": recent}, {"sessionId": "someone-else"},
+                                         {"sessionId": "vipr-garbage"}, {"sessionId": "mine", "status": "IN_PROGRESS"},
+                                         {"sessionId": _sid(timedelta(days=3)), "status": "ACTIVE"}])
     sess.post.return_value = _resp(200, None)
     ok, failed, action = _client(sess).replace_via_session(1, 2, [{"id": "a"}], "mine")
+    posted = _posted(sess)
     assert action == "complete" and sess.get.call_args.args[0].endswith("/sessions?status=IN_PROGRESS")
-    posted = [(c.args[0].rsplit("/sessions/", 1)[1], sent(c)) for c in sess.post.call_args_list]
-    assert posted[0] == ("old-1/actions", {"action": "cancel"}) and posted[1] == ("old-2/actions", {"action": "cancel"})
-    assert posted[-1] == ("mine/actions", {"action": "complete"}) and ("mine/actions", {"action": "cancel"}) not in posted
+    assert posted[0] == ("%s/actions" % old, {"action": "cancel"})
+    cancelled = [p for p, body in posted if body == {"action": "cancel"}]
+    assert cancelled == ["%s/actions" % old]
+    assert posted[-1] == ("mine/actions", {"action": "complete"})
 
 
-@pytest.mark.parametrize("listing", [_resp(500), _resp(200, "junk"), _resp(200, {"nope": 1}), _resp(200, [])])
-def test_session_listing_failures_never_block_the_push(listing):
+def test_listing_is_retried_and_failures_never_block_the_push():
     sess = mock.Mock()
-    sess.get.return_value = listing
+    sess.get.side_effect = [_resp(429), _resp(500), _resp(200, [])]
+    sess.post.return_value = _resp(200, None)
+    assert _client(sess).replace_via_session(1, 2, [{"id": "a"}], "s")[2] == "complete" and sess.get.call_count == 3
+    for listing in (_resp(500), _resp(200, "junk"), _resp(200, {"nope": 1}), _resp(404)):
+        sess = mock.Mock()
+        sess.get.return_value = listing
+        sess.post.return_value = _resp(200, None)
+        assert _client(sess, max_errors=1, max_rate_limits=1).replace_via_session(1, 2, [{"id": "a"}], "s")[2] == "complete"
+    sess = mock.Mock()
+    sess.get.side_effect = requests.ConnectionError("x")
     sess.post.return_value = _resp(200, None)
     assert _client(sess).replace_via_session(1, 2, [{"id": "a"}], "s")[2] == "complete"
-    sess.get.side_effect = requests.ConnectionError("x")
+
+
+def test_a_failed_complete_cancels_its_own_session_and_explains_when_listing_failed():
+    sess = mock.Mock()
+    sess.get.return_value = _resp(500)
+    sess.post.side_effect = [_resp(200)] + [_resp(409)] * 5
+    ok, failed, action = _client(sess, max_errors=1, max_rate_limits=1).replace_via_session(1, 2, [{"id": "a"}], "s")
+    assert action == "complete" and failed[0]["error"].startswith("session complete failed: HTTP 409")
+    assert "could not be listed" in failed[1]["error"]
+    assert _posted(sess)[-1] == ("s/actions", {"action": "cancel"})
+    sess.post.side_effect = [_resp(200)] + [_resp(500)] * 8
+    sess.get.return_value = _resp(200, [])
+    ok, failed, action = _client(sess).replace_via_session(1, 2, [{"id": "a"}], "s")
+    assert len(failed) == 1 and _posted(sess)[-1][1] == {"action": "cancel"}
+
+
+def test_interrupt_during_the_final_action_still_cancels_but_never_after_a_successful_complete():
+    sess = mock.Mock()
+    sess.get.return_value = _resp(200, [])
+    sess.post.side_effect = [_resp(200), KeyboardInterrupt, _resp(200)]
+    with pytest.raises(KeyboardInterrupt):
+        _client(sess).replace_via_session(1, 2, [{"id": "a"}], "s")
+    assert [b for _, b in _posted(sess)][-1] == {"action": "cancel"}
+    sess = mock.Mock()
+    sess.get.return_value = _resp(200, [])
+    sess.post.return_value = _resp(200, None)
     assert _client(sess).replace_via_session(1, 2, [{"id": "a"}], "s")[2] == "complete"
+    assert [b for _, b in _posted(sess)].count({"action": "cancel"}) == 0
 
 
-def _sized(n, pad=0):
-    return [F(i, displayId="x" * pad, viprSeverity="high") for i in range(n)]
+def test_persistent_rate_limiting_stops_the_remaining_batches_after_one_exhausts():
+    sess = mock.Mock()
+    sess.post.return_value = _resp(429)
+    c = _client(sess, batch_size=1, max_rate_limits=2)
+    ok, failed = c.upsert(1, 2, [{"id": str(i)} for i in range(10)])
+    assert ok == 0 and len(failed) == 10 and sess.post.call_count == 3
+    assert all("rate limited" in f["error"] for f in failed)
 
 
-def test_auto_buckets_grow_in_powers_of_two_and_never_below_the_minimum():
-    items = _sized(1000, 200)
-    total = sum(size_of(i) + 1 for i in items)
-    assert auto_buckets([], 3, 1000) == 3 and auto_buckets(items, 1, total) == 1 and auto_buckets(items, 1, total - 1) == 2
-    assert auto_buckets(items, 1, total // 3) == 4 and auto_buckets(items, 8, total) == 8
-    assert auto_buckets(items, 1, total // 5) == 8
-
-
-def test_grow_buckets_keeps_every_record_near_half_the_limit():
-    findings = [F(i, displayId="x" * 300, viprSeverity=LANES[i % 5]) for i in range(20_000)]
-    fixed = dict(SMALL)
-    with pytest.raises(ConfigError):
-        build(findings, [], lane_buckets=fixed, max_record_bytes=400_000)
-    recs = build(findings, [], lane_buckets=fixed, max_record_bytes=400_000, grow_buckets=True)
-    sizes = [size_of(r) for r in recs]
-    assert max(sizes) < 400_000 and len(flatten(recs)["findings"]) == 20_000
-    counts = {r["severityLane"]: r["bucketCount"] for r in recs if r["recordType"] == "findingBatch"}
-    assert all(n & (n - 1) == 0 for n in counts.values()) and counts["unknown"] == fixed["unknown"] == 1
-    assert counts["low"] > fixed["low"] and recs[0]["findingBuckets"] == sum(counts.values())
-
-
-def test_grow_buckets_respects_configured_minimums_and_is_stable_for_small_changes():
-    base = [F(i, viprSeverity="medium") for i in range(500)]
-    a = build(base, [], lane_buckets=dict(SMALL, medium=8), grow_buckets=True)
-    b = build(base + [F(900 + i, viprSeverity="medium") for i in range(5)], [], lane_buckets=dict(SMALL, medium=8), grow_buckets=True)
-    assert ids(a) == ids(b) and sum(1 for r in a if r["id"].startswith("findings-medium")) == 8
-    exact = build(base, [], lane_buckets=dict(SMALL, medium=3), grow_buckets=False)
-    assert sum(1 for r in exact if r["id"].startswith("findings-medium")) == 3
-
-
-def test_grow_buckets_also_sizes_assets():
-    assets = [A(i, name="n" * 300) for i in range(4000)]
-    recs = build([], assets, asset_buckets=1, max_record_bytes=400_000, grow_buckets=True)
-    assert max(size_of(r) for r in recs) < 400_000 and recs[0]["assetBuckets"] > 1
+def test_sleeping_is_interruptible():
+    import threading
+    import time
+    c = DrataClient("http://x", "k", workers=1)
+    started = time.monotonic()
+    threading.Timer(0.1, c._stop.set).start()
+    c._sleep(30)
+    assert time.monotonic() - started < 5

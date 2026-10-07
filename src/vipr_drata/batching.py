@@ -14,6 +14,8 @@ MAX_RECORD_BYTES_LIMIT = 4_500_000
 TRISTATE = ("open", "ignored", "hasTicket", "missingTicket", "slaBreached", "severityChanged", "closedAfterSla",
             "isActive", "viprLastSeenStale", "tenableScanStale")
 CVE_CAP = 25
+TEXT_CAP = 200
+TEXT_KEYS = ("displayId", "assetName", "name", "assetId", "toolSeverities")
 FINDING_KEYS = ("id", "displayId", "viprSeverity", "scannerSeverity", "severityChanged", "severityDirection",
                 "toolSeverities", "open", "ignored", "hasTicket", "missingTicket", "slaDate", "slaBreached",
                 "closedAfterSla", "firstSeen", "closedAt", "assetId", "assetName", "cves", "cveCount")
@@ -49,7 +51,11 @@ def parse_lane_buckets(raw):
 
 
 def compact(item, keys):
-    return {k: item[k] for k in keys if k in item and (k in TRISTATE or item[k] not in (None, []))}
+    out = {k: item[k] for k in keys if k in item and (k in TRISTATE or item[k] not in (None, []))}
+    for k in TEXT_KEYS:
+        if isinstance(out.get(k), str) and len(out[k]) > TEXT_CAP:
+            out[k] = out[k][:TEXT_CAP - 3] + "..."
+    return out
 
 
 def finding_item(f):
@@ -76,9 +82,9 @@ def batch_time(rows):
             continue
         try:
             hour = min(max(int(float(r.get("__hour") or 0)), 0), 23)
-        except ValueError:
+        except (ValueError, OverflowError):
             hour = 0
-        t = d + timedelta(hours=hour)
+        t = d.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(hours=hour)
         best = t if best is None or t > best else best
     return best
 
@@ -113,11 +119,13 @@ def _summary(findings, assets, *, now, source_dates, max_source_age_days, lane_b
     }
 
 
-def auto_buckets(items, minimum, target_bytes):
+def auto_buckets(items, minimum, target_bytes, label="lane"):
     need = max(1, math.ceil(sum(size_of(i) + 1 for i in items) / target_bytes))
     n = 1
-    while n < need:
+    while n < need:  # powers of two: counts change rarely between nights
         n *= 2
+    if n > MAX_BUCKETS:
+        raise ConfigError("%s needs %d batches (limit %d): raise MAX_RECORD_BYTES or reduce the data" % (label, n, MAX_BUCKETS))
     return max(minimum, n)
 
 
@@ -150,8 +158,9 @@ def build_records(findings, assets, *, now, lane_buckets=None, asset_buckets=DEF
         by_lane[lane_of(it)].append(it)
     if grow_buckets:
         target = max_record_bytes // 2
-        lane_buckets = {lane: auto_buckets(by_lane[lane], lane_buckets.get(lane, 1), target) for lane in LANES}
-        asset_buckets = auto_buckets(asset_items, asset_buckets, target)
+        lane_buckets = {lane: auto_buckets(by_lane[lane], lane_buckets.get(lane, 1), target, lane + " findings")
+                        for lane in LANES}
+        asset_buckets = auto_buckets(asset_items, asset_buckets, target, "assets")
     records = [_summary(kept, asset_items, now=now, source_dates=source_dates or {},
                         max_source_age_days=max_source_age_days, lane_buckets=lane_buckets,
                         asset_buckets=asset_buckets, closed_excluded=excluded, rejected=rejected)]
@@ -169,14 +178,18 @@ def build_records(findings, assets, *, now, lane_buckets=None, asset_buckets=DEF
             "displayName": "Vipr assets batch %d of %d" % (i + 1, asset_buckets),
             "generatedAt": _iso(now), "sourceBatchDate": records[0]["sourceBatchDate"],
             "bucket": i, "bucketCount": asset_buckets, "itemCount": len(grp), "assets": grp})
-    for r in records:
+    for r in records:  # guard on wire bytes; Drata rejects bodies over 5 MB
         size = size_of(r)
         if size > max_record_bytes:
             current = r.get("bucketCount")
             if current is None:
                 raise ConfigError("summary record is %.1f MB: raise MAX_RECORD_BYTES" % (size / 1e6))
             target = ("FINDING_LANE_BUCKETS[%s]" % r["severityLane"]) if r["recordType"] == "findingBatch" else "ASSET_BUCKETS"
-            need = math.ceil(current * size / (max_record_bytes * 0.6))
+            if grow_buckets:
+                raise ConfigError("record %s is %.1f MB (limit %.1f MB) even after auto-sizing: uneven hashing or an "
+                                  "oversized item; raise MAX_RECORD_BYTES (max %d)"
+                                  % (r["id"], size / 1e6, max_record_bytes / 1e6, MAX_RECORD_BYTES_LIMIT))
+            need = min(math.ceil(current * size / (max_record_bytes * 0.6)), MAX_BUCKETS)
             raise ConfigError("record %s is %.1f MB (limit %.1f MB): raise %s from %d to at least %d"
                               % (r["id"], size / 1e6, max_record_bytes / 1e6, target, current, need))
     return records

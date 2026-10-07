@@ -22,7 +22,7 @@ def _client(sess, **kw):
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch):
     sleeps = []
-    monkeypatch.setattr(dc.time, "sleep", sleeps.append)
+    monkeypatch.setattr(dc.DrataClient, "_sleep", lambda self, seconds: sleeps.append(seconds))
     return sleeps
 
 
@@ -110,9 +110,10 @@ def test_session_cancels_on_failure_and_reports_action_failure():
     s.post.side_effect = [_resp(400), _resp(200)]
     ok, failed, action = _client(s).replace_via_session(1, 2, [{"id": "a"}], "s-2")
     assert action == "cancel" and failed and sent(s.post.call_args) == {"action": "cancel"}
-    s.post.side_effect = [_resp(200)] + [_resp(500)] * 4
+    s.post.side_effect = [_resp(200)] + [_resp(500)] * 4 + [_resp(200)]
     ok, failed, action = _client(s).replace_via_session(1, 2, [{"id": "a"}], "s-3")
-    assert action == "complete" and "session complete failed" in failed[-1]["error"]
+    assert action == "complete" and "session complete failed" in failed[0]["error"]
+    assert sent(s.post.call_args) == {"action": "cancel"}
 
 
 def test_session_empty_snapshot_refused_without_http():

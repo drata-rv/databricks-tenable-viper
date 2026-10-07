@@ -34,6 +34,10 @@ variables:
     default: "1"
   min_assets:
     default: "1"
+  scan_stale_days:
+    default: "7"
+  max_reject_ratio:
+    default: ""
   scanner_tool:
     default: tenable
   scanner_severity_map:
@@ -51,6 +55,7 @@ resources:
   jobs:
     vipr_drata_sync:
       name: vipr-drata-sync-${bundle.target}
+      max_concurrent_runs: 1
       tasks:
         - task_key: sync
           environment_key: default
@@ -90,6 +95,10 @@ resources:
               - MIN_FINDINGS=${var.min_findings}
               - --env
               - MIN_ASSETS=${var.min_assets}
+              - --env
+              - SCAN_STALE_DAYS=${var.scan_stale_days}
+              - --env
+              - MAX_REJECT_RATIO=${var.max_reject_ratio}
               - --env
               - SCANNER_TOOL=${var.scanner_tool}
               - --env

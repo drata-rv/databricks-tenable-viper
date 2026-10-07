@@ -9,7 +9,7 @@ from .db.auth import drata_api_key, get_client_for_env
 from .db.drata_client import DrataClient
 from .db.queries import is_true
 from .db.secrets import ConfigError
-from .etl.extract import extract_all, merge
+from .etl.extract import active_specs, extract_all, merge
 from .etl.local import load_local_tables
 from .batching import (DEFAULT_ASSET_BUCKETS, MAX_BUCKETS, MAX_RECORD_BYTES_LIMIT, batch_time, build_records,
                        parse_lane_buckets, size_of)
@@ -47,6 +47,19 @@ def _has_tables(directory):
     return os.path.isdir(directory) and any(f.endswith((".csv", ".json")) for f in os.listdir(directory))
 
 
+def _env_str(name, default):
+    return (os.getenv(name) or "").strip() or default
+
+
+def _env_bool(name):
+    raw = _env_str(name, "").lower()
+    if raw in ("", "false", "0", "no", "off"):
+        return False
+    if raw in ("true", "1", "yes", "on"):
+        return True
+    raise ConfigError("%s must be true or false, got %r" % (name, raw))
+
+
 def _env_number(name, default, cast):
     raw = (os.getenv(name) or "").strip()
     if not raw:
@@ -70,11 +83,12 @@ def parse_scale(raw):
 
 def build_parser():
     p = argparse.ArgumentParser(prog="vipr-drata")
-    p.add_argument("--workspace", default=os.getenv("DATABRICKS_WORKSPACE", "test"), help="test|prod (Databricks source)")
+    p.add_argument("--workspace", default=_env_str("DATABRICKS_WORKSPACE", "test"), help="test|prod (Databricks source)")
     p.add_argument("--warehouse-id", default=os.getenv("DATABRICKS_WAREHOUSE_ID"))
-    p.add_argument("--output-dir", default=os.getenv("OUTPUT_DIR", "output"))
-    p.add_argument("--stale-days", type=int, default=_env_number("SCAN_STALE_DAYS", 7, int))
-    p.add_argument("--drata-prod", action="store_true", default=is_true(os.getenv("DRATA_PROD")),
+    p.add_argument("--output-dir", default=_env_str("OUTPUT_DIR", "output"))
+    p.add_argument("--stale-days", type=int, default=_env_number("SCAN_STALE_DAYS", 7, int),
+                   help="days after which an asset's last_seen / Tenable last scan counts as stale (default 7)")
+    p.add_argument("--drata-prod", action="store_true", default=_env_bool("DRATA_PROD"),
                    help="push to Drata prod tenant (separate credentials, no sandbox fallback)")
     p.add_argument("--push-mode", choices=["upsert", "session"], default=None,
                    help="session (default): stage everything, then atomically replace the dataset, removing any "
@@ -100,17 +114,18 @@ def build_parser():
                    help="abort before pushing if fewer assets were extracted (default 1)")
     p.add_argument("--local-rows", type=int, default=_env_number("LOCAL_ROWS", 0, int),
                    help="with --local: generate this many synthetic findings (assets = rows/8) under <local-data>/scale")
-    p.add_argument("--max-reject-ratio", type=float, default=_env_number("MAX_REJECT_RATIO", -1.0, float),
+    p.add_argument("--max-reject-ratio", type=float, default=_env_number("MAX_REJECT_RATIO", None, float),
                    help="abort before pushing if rejected/total exceeds this (default 0.05; disabled with --local, "
                         "whose sample data has deliberate rejects)")
     p.add_argument("--allow-test-source-with-prod", action="store_true",
                    help="allow *test_catalog* source tables together with --drata-prod")
     p.add_argument("--local", action="store_true",
                    help="local test mode: read tables from --local-data files, no Databricks, no push unless --push (sandbox only)")
-    p.add_argument("--local-data", default=os.getenv("LOCAL_DATA_DIR", "local_data"),
+    p.add_argument("--local-data", default=_env_str("LOCAL_DATA_DIR", "local_data"),
                    help="directory with findings/assets[/tenable_assets] .csv|.json; synthetic rows are generated "
                         "when it has none (delete files to regenerate)")
-    p.add_argument("--push", action="store_true", help="with --local: also push to the Drata sandbox connection")
+    p.add_argument("--push", action="store_true",
+                   help="with --local: also push the SYNTHETIC data (in session mode it replaces the whole resource)")
     p.add_argument("--dry-run", action="store_true", help="extract+transform only, no push")
     p.add_argument("--env", action="append", metavar="KEY=VALUE", help="set an environment variable (job parameters)")
     return p
@@ -131,9 +146,11 @@ def main(argv=None):
     except ConfigError as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
+    except KeyboardInterrupt:
+        print("interrupted: any open Drata session was cancelled", file=sys.stderr)
+        return 130
     finally:
-        if previous is not None:
-            signal.signal(signal.SIGTERM, previous)
+        signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
 
 
 def _main(argv):
@@ -153,25 +170,29 @@ def _main(argv):
         p.error("malformed --env (need KEY=VALUE): " + ", ".join(bad))
     args = p.parse_args(argv)
 
-    if args.max_reject_ratio < 0:
+    if args.max_reject_ratio is None:
         args.max_reject_ratio = 1.0 if args.local else 0.05
-    push_mode = args.push_mode or os.getenv("DRATA_PUSH_MODE") or "session"
+    push_mode = args.push_mode or _env_str("DRATA_PUSH_MODE", "session")
     if push_mode not in ("upsert", "session"):
         p.error("invalid push mode %r (DRATA_PUSH_MODE): use upsert or session" % push_mode)
     lane_buckets = parse_lane_buckets(args.finding_lane_buckets)
-    for name, ok in (("--asset-buckets", 1 <= args.asset_buckets <= MAX_BUCKETS),
-                     ("--closed-lookback-days", args.closed_lookback_days >= 1),
-                     ("--max-source-age-days", args.max_source_age_days >= 0),
-                     ("--max-record-bytes", 100_000 <= args.max_record_bytes <= MAX_RECORD_BYTES_LIMIT),
-                     ("--min-findings/--min-assets", args.min_findings >= 0 and args.min_assets >= 0),
-                     ("--stale-days", args.stale_days >= 0)):
+    for name, ok, hint in (
+            ("--asset-buckets", 1 <= args.asset_buckets <= MAX_BUCKETS, "1-%d" % MAX_BUCKETS),
+            ("--closed-lookback-days", 1 <= args.closed_lookback_days <= 36500, "1-36500"),
+            ("--max-source-age-days", 0 <= args.max_source_age_days <= 36500, "0-36500"),
+            ("--max-record-bytes", 100_000 <= args.max_record_bytes <= MAX_RECORD_BYTES_LIMIT, "100000-%d" % MAX_RECORD_BYTES_LIMIT),
+            ("--min-findings", 0 <= args.min_findings <= 10**9, "0-1000000000"),
+            ("--min-assets", 0 <= args.min_assets <= 10**9, "0-1000000000"),
+            ("--stale-days", 0 <= args.stale_days <= 36500, "0-36500"),
+            ("--local-rows", 0 <= args.local_rows <= 5_000_000, "0-5000000"),
+            ("--max-reject-ratio", 0.0 <= args.max_reject_ratio <= 1.0, "0-1")):
         if not ok:
-            p.error("%s out of range (buckets 1-%d, lookback >= 1, record bytes 100000-%d)" % (name, MAX_BUCKETS, MAX_RECORD_BYTES_LIMIT))
+            p.error("%s out of range (%s)" % (name, hint))
     scale = parse_scale(args.scanner_severity_map)
     if scale is None:
         p.error("--scanner-severity-map must be a JSON object mapping to info|low|medium|high|critical")
     if args.local and args.drata_prod:
-        p.error("--local never pushes to Drata prod; drop --drata-prod")
+        p.error("--local never pushes to Drata prod; drop --drata-prod and unset DRATA_PROD")
     if args.local and not args.push:
         args.dry_run = True
     if not args.local and not args.warehouse_id:
@@ -187,8 +208,12 @@ def _main(argv):
             p.error("refusing to push to Drata PROD from test-catalog tables (%s); set prod tables or pass "
                     "--allow-test-source-with-prod" % ", ".join(test_src))
 
+    if not args.local:
+        unset = [s.env_var for s in active_specs() if s.required and not (os.getenv(s.env_var) or "").strip()]
+        if unset:
+            raise ConfigError("missing source table setting(s): " + ", ".join(unset))
     args.scanner_tool = (args.scanner_tool or "").strip() or "tenable"
-    for stale in ("_failed.json", "partial.json"):
+    for stale in ("_failed.json", "partial.json", "records.json", "_profile.json", "_rejected.json"):
         if os.path.exists(os.path.join(args.output_dir, stale)):
             os.remove(os.path.join(args.output_dir, stale))
 
@@ -237,8 +262,13 @@ def _main(argv):
         sum(size_of(r) for r in records) / 1e6))
     if rejected:
         print("rejected sample: %s" % [(r["resource"], r["reason"]) for r in rejected[:5]])
+    lane_counts = {r["severityLane"]: r["bucketCount"] for r in records if r["recordType"] == "findingBatch"}
+    print("batches: %s assets=%d (pin with FINDING_LANE_BUCKETS / ASSET_BUCKETS to stop counts moving)" %
+          (" ".join("%s=%d" % kv for kv in lane_counts.items()), records[0]["assetBuckets"]))
 
-    short = [n for n, have, need in (("findings", len(findings), args.min_findings), ("assets", len(scans), args.min_assets))
+    # count what is actually submitted: an empty array makes every array test pass
+    kept_findings, kept_assets = records[0]["findingCount"], records[0]["assetCount"]
+    short = [n for n, have, need in (("findings", kept_findings, args.min_findings), ("assets", kept_assets, args.min_assets))
              if have < need]
     if short:
         print("%s: extracted too few %s (need MIN_FINDINGS=%d / MIN_ASSETS=%d); nothing pushed" %
@@ -256,13 +286,16 @@ def _main(argv):
         return 2
 
     print("Drata tenant: %s | push mode: %s" % ("PROD" if args.drata_prod else "sandbox", push_mode))
-    dc = DrataClient(os.getenv("DRATA_API_BASE", "https://public-api.drata.com"),
+    if args.local and push_mode == "session":
+        print("WARNING: --local --push in session mode replaces the whole resource with synthetic data", file=sys.stderr)
+    dc = DrataClient(_env_str("DRATA_API_BASE", "https://public-api.drata.com"),
                      drata_api_key(args.drata_prod, args.workspace))
     session_id = "vipr-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     conn, res = os.environ["DRATA_CONNECTION_ID"], os.environ["DRATA_RESOURCE_ID"]
     if push_mode == "session":
         ok, failed, action = dc.replace_via_session(conn, res, records, session_id)
-        print("session=%s pushed=%d failed=%d -> %s" % (session_id, ok, len(failed), action))
+        outcome = action if not any(f["error"].startswith("session %s failed" % action) for f in failed) else action + " FAILED"
+        print("session=%s pushed=%d failed=%d -> %s" % (session_id, ok, len(failed), outcome))
     else:
         ok, failed = dc.upsert(conn, res, records)
         print("upsert pushed=%d failed=%d" % (ok, len(failed)))

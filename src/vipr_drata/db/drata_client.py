@@ -2,19 +2,23 @@ import json
 import math
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
-MAX_BODY_BYTES = 4 * 1024 * 1024
-RECORD_ERRORS = {400, 413, 422}
+MAX_BODY_BYTES = 4 * 1024 * 1024  # Drata limit 5 MB
+RECORD_ERRORS = {400, 413, 422}  # other 4xx are request-level: stop sending
 PERMANENT = (requests.exceptions.InvalidHeader, requests.exceptions.InvalidURL,
              requests.exceptions.InvalidSchema, requests.exceptions.MissingSchema)
 INTERRUPTED = "interrupted"
 MAX_RETRY_AFTER = 120.0
 WRAPPER_KEYS = ("data", "results", "items", "records")
+SESSION_PREFIX = "vipr-"
+STALE_SESSION_AFTER = timedelta(hours=2)
 
 
+# compact JSON: the size guard in batching.py measures these same bytes
 def dumps(body):
     return json.dumps(body, separators=(",", ":"), default=str)
 
@@ -45,6 +49,7 @@ class DrataClient:
         self._local = threading.local()
         self._fatal = None
         self._unverified = []
+        self._stop = threading.Event()
 
     @property
     def unverified(self):
@@ -73,6 +78,9 @@ class DrataClient:
             return default
         return min(v, MAX_RETRY_AFTER)
 
+    def _sleep(self, seconds):
+        self._stop.wait(seconds)
+
     def _post(self, url, body, force=False):
         ok, err, _ = self._send(url, body, force)
         return ok, err
@@ -94,19 +102,21 @@ class DrataClient:
                 errors += 1
                 if errors > max_errors:
                     return False, type(e).__name__, None
-                time.sleep(self.backoff * errors)
+                self._sleep(self.backoff * errors)
                 continue
             code = resp.status_code
             if code == 429:
                 limits += 1
                 if limits > max_limits:
+                    if not force:  # circuit breaker: stop the remaining batches retrying
+                        self._fatal = "rate limited: retries exhausted"
                     return False, "rate limited", None
-                time.sleep(self._retry_after(resp, self.backoff * limits))
+                self._sleep(self._retry_after(resp, self.backoff * limits))
             elif code >= 500:
                 errors += 1
                 if errors > max_errors:
                     return False, "HTTP %s" % code, None
-                time.sleep(self.backoff * errors)
+                self._sleep(self.backoff * errors)
             elif code >= 400:
                 if code not in RECORD_ERRORS:
                     self._fatal = "HTTP %s: %s" % (code, resp.text[:200])
@@ -166,6 +176,7 @@ class DrataClient:
                 failed.extend(f)
         except BaseException:
             self._fatal = INTERRUPTED
+            self._stop.set()
             ex.shutdown(wait=False, cancel_futures=True)
             raise
         ex.shutdown()
@@ -174,33 +185,85 @@ class DrataClient:
     def upsert(self, connection_id, resource_id, records):
         return self._push_all(self._base(connection_id, resource_id) + "/records", records)
 
-    def _in_progress_sessions(self, base):
+    def _get(self, url):
+        errors = limits = 0
+        while True:
+            try:
+                resp = self._session().get(url, timeout=30)
+            except requests.RequestException:
+                errors += 1
+                if errors > self.max_errors:
+                    return None
+                self._sleep(self.backoff * errors)
+                continue
+            code = resp.status_code
+            if not isinstance(code, int):
+                return None
+            if code == 429 or code >= 500:
+                limits += 1
+                if limits > self.max_rate_limits:
+                    return None
+                self._sleep(self._retry_after(resp, self.backoff * limits))
+                continue
+            if code >= 400:
+                return None
+            try:
+                return resp.json()
+            except ValueError:
+                return None
+
+    @staticmethod
+    def _session_age(session_id, now):
         try:
-            resp = self._session().get(base + "/sessions?status=IN_PROGRESS", timeout=30)
-            if not isinstance(resp.status_code, int) or resp.status_code >= 400:
-                return []
-            data = resp.json()
-        except (requests.RequestException, ValueError):
-            return []
+            started = datetime.strptime(session_id[len(SESSION_PREFIX):], "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+        return now - started
+
+    def _stale_sessions(self, base, own_id, now=None):
+        now = now or datetime.now(timezone.utc)
+        # only this tool's own sessions, older than 2 h: never cancel another writer's session
+        data = self._get(base + "/sessions?status=IN_PROGRESS")
         if isinstance(data, dict):
             data = next((data[k] for k in WRAPPER_KEYS if isinstance(data.get(k), list)), [])
-        ids = [(i.get("sessionId") or i.get("id")) if isinstance(i, dict) else i for i in data] if isinstance(data, list) else []
-        return [str(i) for i in ids if i]
+        if data is None:
+            return None
+        if not isinstance(data, list):
+            return []
+        stale = []
+        for item in data:
+            if isinstance(item, dict) and item.get("status") not in (None, "IN_PROGRESS"):
+                continue
+            sid = str((item.get("sessionId") or item.get("id")) if isinstance(item, dict) else item or "")
+            age = self._session_age(sid, now) if sid.startswith(SESSION_PREFIX) else None
+            if sid and sid != own_id and age is not None and age > STALE_SESSION_AFTER:
+                stale.append(sid)
+        return stale
 
     def replace_via_session(self, connection_id, resource_id, records, session_id):
         if not records:
             return 0, [{"id": None, "error": "empty snapshot: refusing session replace"}], "skipped"
         base = self._base(connection_id, resource_id)
-        for stale in self._in_progress_sessions(base):
-            if stale != session_id:
-                self._post("%s/sessions/%s/actions" % (base, stale), {"action": "cancel"}, force=True)
+        actions = base + "/sessions/%s/actions" % session_id
+        finished = False
+        # complete hard-deletes every record not staged
         try:
+            stale = self._stale_sessions(base, session_id)
+            for sid in stale or []:
+                self._post(base + "/sessions/%s/actions" % sid, {"action": "cancel"}, force=True)
             ok, failed = self._push_all("%s/sessions/%s" % (base, session_id), records)
+            action = "complete" if not failed else "cancel"
+            done, err = self._post(actions, {"action": action})
+            finished = done
+            if not done:
+                failed.append({"id": None, "error": "session %s failed: %s" % (action, err)})
+                if action == "complete":
+                    self._post(actions, {"action": "cancel"}, force=True)
+                    if stale is None:
+                        failed.append({"id": None, "error": "in-progress sessions could not be listed; a session from "
+                                                             "another run may be blocking complete"})
+            return ok, failed, action
         except BaseException:
-            self._post("%s/sessions/%s/actions" % (base, session_id), {"action": "cancel"}, force=True)
+            if not finished:
+                self._post(actions, {"action": "cancel"}, force=True)
             raise
-        action = "complete" if not failed else "cancel"
-        done, err = self._post("%s/sessions/%s/actions" % (base, session_id), {"action": action})
-        if not done:
-            failed.append({"id": None, "error": "session %s failed: %s" % (action, err)})
-        return ok, failed, action

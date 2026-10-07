@@ -178,7 +178,7 @@ def test_sizing_settings_reach_the_records(monkeypatch, tmp_path):
     args = _env(monkeypatch, tmp_path)
     monkeypatch.setenv("ASSET_BUCKETS", "3")
     monkeypatch.setenv("FINDING_LANE_BUCKETS", '{"low": 2, "high": 1, "medium": 1, "critical": 1, "info": 1, "unknown": 1}')
-    monkeypatch.setenv("MAX_SOURCE_AGE_DAYS", "100000")
+    monkeypatch.setenv("MAX_SOURCE_AGE_DAYS", "36500")
     with mock.patch.object(cli, "get_client_for_env"), mock.patch("vipr_drata.etl.extract.run_sql", fake_run_sql):
         assert cli.main(args + ["--dry-run"]) == 0
     recs = json.load(open(tmp_path / "records.json"))
@@ -190,19 +190,32 @@ def test_sizing_settings_reach_the_records(monkeypatch, tmp_path):
     assert cli.main(args + ["--dry-run"]) == 2
 
 
-def test_sigterm_cancels_through_the_interrupt_path(monkeypatch, tmp_path):
+def test_sigterm_cancels_the_session_and_exits_130(monkeypatch, tmp_path, capsys):
     import os
     import signal
     args = _env(monkeypatch, tmp_path)
     monkeypatch.setenv("DRATA_API_KEY", "k")
-    def term(*a, **k):
-        os.kill(os.getpid(), signal.SIGTERM)
+    posts = []
+
+    def fake_post(url, data, timeout):
+        posts.append((url.rsplit("/sessions/", 1)[-1], json.loads(data)))
+        if len(posts) == 1:
+            os.kill(os.getpid(), signal.SIGTERM)
+        resp = mock.Mock(status_code=200, headers={}, text="")
+        resp.json.return_value = None
+        return resp
+
+    session = mock.Mock()
+    session.post.side_effect = fake_post
+    session.get.return_value = mock.Mock(status_code=200, json=lambda: [])
     before = signal.getsignal(signal.SIGTERM)
     with mock.patch.object(cli, "get_client_for_env"), mock.patch("vipr_drata.etl.extract.run_sql", fake_run_sql), \
-            mock.patch.object(cli.DrataClient, "replace_via_session", side_effect=term):
-        with pytest.raises(KeyboardInterrupt):
-            cli.main(args)
+            mock.patch.object(cli.DrataClient, "_build_session", lambda self: session):
+        assert cli.main(args) == 130
     assert signal.getsignal(signal.SIGTERM) == before
+    cancels = [p for p in posts if p[1] == {"action": "cancel"}]
+    assert len(cancels) == 1 and not any(p[1] == {"action": "complete"} for p in posts)
+    assert "interrupted" in capsys.readouterr().err
 
 
 def test_reject_ratio_guard_aborts_before_push(monkeypatch, tmp_path):
