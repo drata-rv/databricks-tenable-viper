@@ -3,6 +3,7 @@ from unittest import mock
 import pytest
 import requests
 
+from helpers import sent
 from vipr_drata.db import drata_client as dc
 from vipr_drata.db.auth import drata_api_key
 from vipr_drata.db.drata_client import DrataClient
@@ -86,7 +87,7 @@ def test_upsert_url_body_and_batching():
     assert ok == 3 and not failed and s.post.call_count == 2
     urls = {c.args[0] for c in s.post.call_args_list}
     assert urls == {"http://x/public/v2/custom-connections/7/resources/9/records"}
-    assert [len(c.kwargs["json"]["data"]) for c in s.post.call_args_list] == [2, 1]
+    assert [len(sent(c)["data"]) for c in s.post.call_args_list] == [2, 1]
 
 
 def test_chunking_respects_byte_cap():
@@ -99,7 +100,7 @@ def test_session_complete_flow_urls_and_bodies():
     s.post.return_value = _resp(200)
     ok, failed, action = _client(s).replace_via_session(1, 2, [{"id": "a"}], "s-1")
     assert (ok, failed, action) == (1, [], "complete")
-    calls = [(c.args[0], c.kwargs["json"]) for c in s.post.call_args_list]
+    calls = [(c.args[0], sent(c)) for c in s.post.call_args_list]
     base = "http://x/public/v2/custom-connections/1/resources/2/sessions/s-1"
     assert calls == [(base, {"data": [{"id": "a"}]}), (base + "/actions", {"action": "complete"})]
 
@@ -108,7 +109,7 @@ def test_session_cancels_on_failure_and_reports_action_failure():
     s = mock.Mock()
     s.post.side_effect = [_resp(400), _resp(200)]
     ok, failed, action = _client(s).replace_via_session(1, 2, [{"id": "a"}], "s-2")
-    assert action == "cancel" and failed and s.post.call_args.kwargs["json"] == {"action": "cancel"}
+    assert action == "cancel" and failed and sent(s.post.call_args) == {"action": "cancel"}
     s.post.side_effect = [_resp(200)] + [_resp(500)] * 4
     ok, failed, action = _client(s).replace_via_session(1, 2, [{"id": "a"}], "s-3")
     assert action == "complete" and "session complete failed" in failed[-1]["error"]
@@ -143,7 +144,8 @@ def test_interrupt_stops_queued_batches_and_cancels_session_once():
     started, calls = threading.Event(), []
     s = mock.Mock()
 
-    def post(url, json, timeout):
+    def post(url, data, timeout):
+        json = __import__("json").loads(data)
         calls.append(json)
         if "data" in json and not started.is_set():
             started.set()

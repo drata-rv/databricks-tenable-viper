@@ -10,3 +10,8 @@ def flatten(records):
             out["batches"]["assetBatch"].append(r)
             out["assets"].update({i["id"]: i for i in r["assets"]})
     return out
+
+
+def sent(call):
+    import json
+    return json.loads(call.kwargs["data"])

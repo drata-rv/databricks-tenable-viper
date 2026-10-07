@@ -6,7 +6,13 @@ from datetime import timedelta
 from .db.secrets import ConfigError
 from .transform import _iso, _parse_ts
 
-TRISTATE = ("open", "hasTicket", "missingTicket", "slaBreached", "isActive", "viprLastSeenStale", "tenableScanStale")
+LANES = ("critical", "high", "medium", "low", "info", "unknown")
+DEFAULT_LANE_BUCKETS = {"critical": 1, "high": 2, "medium": 4, "low": 4, "info": 1, "unknown": 1}
+DEFAULT_ASSET_BUCKETS = 4
+MAX_BUCKETS = 256
+MAX_RECORD_BYTES_LIMIT = 4_500_000
+TRISTATE = ("open", "ignored", "hasTicket", "missingTicket", "slaBreached", "severityChanged", "closedAfterSla",
+            "isActive", "viprLastSeenStale", "tenableScanStale")
 CVE_CAP = 25
 FINDING_KEYS = ("id", "displayId", "viprSeverity", "scannerSeverity", "severityChanged", "severityDirection",
                 "toolSeverities", "open", "ignored", "hasTicket", "missingTicket", "slaDate", "slaBreached",
@@ -18,6 +24,28 @@ ASSET_KEYS = ("id", "name", "assetType", "isActive", "lastSeen", "daysSinceSeen"
 
 def bucket_of(key, buckets):
     return zlib.crc32(str(key).encode("utf-8")) % buckets
+
+
+def lane_of(item):
+    sev = item.get("viprSeverity")
+    return sev if sev in LANES[:-1] else "unknown"
+
+
+def parse_lane_buckets(raw):
+    out = dict(DEFAULT_LANE_BUCKETS)
+    if raw is None or not str(raw).strip():
+        return out
+    try:
+        given = json.loads(raw)
+    except ValueError:
+        given = None
+    if not isinstance(given, dict) or any(k not in LANES for k in given):
+        raise ConfigError("FINDING_LANE_BUCKETS must be a JSON object with keys from %s" % ", ".join(LANES))
+    for lane, n in given.items():
+        if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= MAX_BUCKETS:
+            raise ConfigError("FINDING_LANE_BUCKETS[%s] must be an integer from 1 to %d" % (lane, MAX_BUCKETS))
+        out[lane] = n
+    return out
 
 
 def compact(item, keys):
@@ -40,24 +68,38 @@ def size_of(record):
     return len(json.dumps(record, separators=(",", ":"), default=str).encode("utf-8"))
 
 
-def batch_date(*row_sets):
-    dates = [d for rows in row_sets for d in (_parse_ts(r.get("__date")) for r in rows) if d]
-    return max(dates) if dates else None
+def batch_time(rows):
+    best = None
+    for r in rows:
+        d = _parse_ts(r.get("__date"))
+        if d is None:
+            continue
+        try:
+            hour = min(max(int(float(r.get("__hour") or 0)), 0), 23)
+        except ValueError:
+            hour = 0
+        t = d + timedelta(hours=hour)
+        best = t if best is None or t > best else best
+    return best
 
 
-def _count(items, key, value=True):
-    return sum(1 for i in items if i.get(key) is value)
+def _count(items, key):
+    return sum(1 for i in items if i.get(key) is True)
 
 
-def _summary(findings, assets, *, now, source_date, max_source_age_days, finding_buckets, asset_buckets,
+def _summary(findings, assets, *, now, source_dates, max_source_age_days, lane_buckets, asset_buckets,
              closed_excluded, rejected):
     open_f = [f for f in findings if f.get("open") is True]
-    age = None if source_date is None else (now - source_date).days
-    fresh = None if source_date is None else (now - source_date) <= timedelta(days=max_source_age_days)
+    dates = list(source_dates.values())
+    oldest = None if not dates or any(d is None for d in dates) else min(dates)
+    fresh = None if oldest is None else (now - oldest) <= timedelta(days=max_source_age_days)
     return {
         "id": "summary", "recordType": "summary", "displayName": "Vipr vulnerability evidence summary",
-        "generatedAt": _iso(now), "sourceBatchDate": _iso(source_date), "sourceBatchAgeDays": age,
-        "sourceFresh": fresh, "findingBuckets": finding_buckets, "assetBuckets": asset_buckets,
+        "generatedAt": _iso(now), "sourceBatchDate": _iso(oldest),
+        "findingsBatchDate": _iso(source_dates.get("findings")), "assetsBatchDate": _iso(source_dates.get("assets")),
+        "tenableBatchDate": _iso(source_dates.get("tenable_assets")),
+        "sourceBatchAgeDays": None if oldest is None else (now - oldest).days, "sourceFresh": fresh,
+        "findingBuckets": sum(lane_buckets.values()), "assetBuckets": asset_buckets,
         "findingCount": len(findings), "openFindingCount": len(open_f),
         "openSlaBreachedCount": _count(open_f, "slaBreached"),
         "openSlaUnknownCount": sum(1 for f in open_f if f.get("slaBreached") is None),
@@ -71,25 +113,28 @@ def _summary(findings, assets, *, now, source_date, max_source_age_days, finding
     }
 
 
-def _batches(kind, record_type, label, field, items, buckets, *, now, source_date):
+def auto_buckets(items, minimum, target_bytes):
+    need = max(1, math.ceil(sum(size_of(i) + 1 for i in items) / target_bytes))
+    n = 1
+    while n < need:
+        n *= 2
+    return max(minimum, n)
+
+
+def _group(items, buckets):
     groups = [[] for _ in range(buckets)]
     for it in items:
         groups[bucket_of(it["id"], buckets)].append(it)
-    out = []
-    for i, grp in enumerate(groups):
+    for grp in groups:
         grp.sort(key=lambda x: x["id"])
-        out.append({
-            "id": "%s-%03d" % (kind, i), "recordType": record_type,
-            "displayName": "Vipr %s batch %d of %d (%d)" % (label, i + 1, buckets, len(grp)),
-            "generatedAt": _iso(now), "sourceBatchDate": _iso(source_date),
-            "bucket": i, "bucketCount": buckets, "itemCount": len(grp), field: grp,
-        })
-    return out
+    return groups
 
 
-def build_records(findings, assets, *, now, finding_buckets=64, asset_buckets=16, closed_lookback_days=90,
-                  max_source_age_days=3, max_record_bytes=4_000_000, source_date=None, rejected=0):
-    if finding_buckets < 1 or asset_buckets < 1:
+def build_records(findings, assets, *, now, lane_buckets=None, asset_buckets=DEFAULT_ASSET_BUCKETS,
+                  closed_lookback_days=90, max_source_age_days=3, max_record_bytes=4_000_000, source_dates=None,
+                  rejected=0, grow_buckets=False):
+    lane_buckets = dict(lane_buckets or DEFAULT_LANE_BUCKETS)
+    if asset_buckets < 1 or any(n < 1 for n in lane_buckets.values()):
         raise ConfigError("bucket counts must be >= 1")
     cutoff = now - timedelta(days=closed_lookback_days)
     kept, excluded = [], 0
@@ -100,19 +145,38 @@ def build_records(findings, assets, *, now, finding_buckets=64, asset_buckets=16
         else:
             kept.append(finding_item(f))
     asset_items = [asset_item(a) for a in assets]
-    records = [_summary(kept, asset_items, now=now, source_date=source_date, max_source_age_days=max_source_age_days,
-                        finding_buckets=finding_buckets, asset_buckets=asset_buckets, closed_excluded=excluded,
-                        rejected=rejected)]
-    records += _batches("findings", "findingBatch", "findings", "findings", kept, finding_buckets,
-                        now=now, source_date=source_date)
-    records += _batches("assets", "assetBatch", "assets", "assets", asset_items, asset_buckets,
-                        now=now, source_date=source_date)
+    by_lane = {lane: [] for lane in LANES}
+    for it in kept:
+        by_lane[lane_of(it)].append(it)
+    if grow_buckets:
+        target = max_record_bytes // 2
+        lane_buckets = {lane: auto_buckets(by_lane[lane], lane_buckets.get(lane, 1), target) for lane in LANES}
+        asset_buckets = auto_buckets(asset_items, asset_buckets, target)
+    records = [_summary(kept, asset_items, now=now, source_dates=source_dates or {},
+                        max_source_age_days=max_source_age_days, lane_buckets=lane_buckets,
+                        asset_buckets=asset_buckets, closed_excluded=excluded, rejected=rejected)]
+    for lane in LANES:
+        n = lane_buckets.get(lane, DEFAULT_LANE_BUCKETS[lane])
+        for i, grp in enumerate(_group(by_lane[lane], n)):
+            records.append({
+                "id": "findings-%s-%03d" % (lane, i), "recordType": "findingBatch", "severityLane": lane,
+                "displayName": "Vipr %s findings batch %d of %d" % (lane, i + 1, n),
+                "generatedAt": _iso(now), "sourceBatchDate": records[0]["sourceBatchDate"],
+                "bucket": i, "bucketCount": n, "itemCount": len(grp), "findings": grp})
+    for i, grp in enumerate(_group(asset_items, asset_buckets)):
+        records.append({
+            "id": "assets-%03d" % i, "recordType": "assetBatch",
+            "displayName": "Vipr assets batch %d of %d" % (i + 1, asset_buckets),
+            "generatedAt": _iso(now), "sourceBatchDate": records[0]["sourceBatchDate"],
+            "bucket": i, "bucketCount": asset_buckets, "itemCount": len(grp), "assets": grp})
     for r in records:
         size = size_of(r)
         if size > max_record_bytes:
-            kind = "FINDING_BUCKETS" if r["recordType"] == "findingBatch" else "ASSET_BUCKETS"
-            current = r["bucketCount"]
+            current = r.get("bucketCount")
+            if current is None:
+                raise ConfigError("summary record is %.1f MB: raise MAX_RECORD_BYTES" % (size / 1e6))
+            target = ("FINDING_LANE_BUCKETS[%s]" % r["severityLane"]) if r["recordType"] == "findingBatch" else "ASSET_BUCKETS"
             need = math.ceil(current * size / (max_record_bytes * 0.6))
             raise ConfigError("record %s is %.1f MB (limit %.1f MB): raise %s from %d to at least %d"
-                              % (r["id"], size / 1e6, max_record_bytes / 1e6, kind, current, need))
+                              % (r["id"], size / 1e6, max_record_bytes / 1e6, target, current, need))
     return records

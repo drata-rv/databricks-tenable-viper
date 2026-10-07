@@ -365,6 +365,31 @@
         },
         "additionalProperties": true
       }
+    },
+    "severityLane": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "critical | high | medium | low | info | unknown"
+    },
+    "findingsBatchDate": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "assetsBatchDate": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tenableBatchDate": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [

@@ -3,17 +3,22 @@
 Databricks Vipr tables -> one Drata Custom Connection.
 
 ## Data model
-Each run submits the same small, fixed set of records (default 81), never one record per finding:
+Each run submits a small set of records (about 20 for small data, under 100 at 170k findings), never one record per finding:
 
 | Record id | `recordType` | Content |
 |---|---|---|
-| `summary` | `summary` | counts, `sourceFresh`, `sourceBatchDate`, `rejectedCount` |
-| `findings-000` ... `findings-063` | `findingBatch` | `findings[]`: one item per finding |
-| `assets-000` ... `assets-015` | `assetBatch` | `assets[]`: one item per asset |
+| `summary` | `summary` | counts, `generatedAt`, `sourceFresh`, per-table batch dates, `rejectedCount` |
+| `findings-<lane>-000` ... | `findingBatch` | `severityLane` + `findings[]`, one item per finding |
+| `assets-000` ... | `assetBatch` | `assets[]`, one item per asset |
 
-Items are assigned to a batch by a stable hash of their id, so a finding lands in the same record every night. Empty batches are still sent, so nothing goes stale. Closed findings older than `CLOSED_LOOKBACK_DAYS` (90) are left out. Tests evaluate the items inside the arrays (Advanced editor, see below). About 170k findings is roughly 80 MB over 81 requests; the run aborts (exit 2) if any record exceeds `MAX_RECORD_BYTES` (4 MB; Drata limit 5 MB) and tells you which bucket setting to raise.
+Findings are grouped by Vipr severity lane (`critical high medium low info unknown`), then spread over batches by a stable hash of the finding id, so an item stays in the same record. Drata scores, lists and excludes per record, so a lane makes a failing record meaningful and lets tests target critical/high SLAs. Empty batches are still sent. Closed findings older than `CLOSED_LOOKBACK_DAYS` (90) are left out.
 
-Changing `FINDING_BUCKETS` or `ASSET_BUCKETS` re-homes items: run once with `--push-mode session` so the old records are replaced, not orphaned.
+Batch counts: `FINDING_LANE_BUCKETS` (default `{"critical":1,"high":2,"medium":4,"low":4,"info":1,"unknown":1}`) and `ASSET_BUCKETS` (4) are minimums. In session mode they grow automatically, in powers of two, so every record stays near `MAX_RECORD_BYTES`/2 (2 MB). In upsert mode they are exact, because changing them would orphan records.
+
+Default push mode is `session`: all records are staged, then atomically replace the dataset. Records not staged (old per-finding records, orphaned batches) are deleted. Any failure cancels and leaves the previous data. `--push-mode upsert` only updates.
+
+Reference run, 170k findings + 21k assets: 78 records, ~91 MB, largest record 1.6 MB, ~25 requests, ~12 s, ~0.6 GB memory (`--local --local-rows 170000`).
+Aborts (exit 2) before pushing if a record exceeds `MAX_RECORD_BYTES` (4 MB on the wire, max 4.5 MB; Drata limit 5 MB), if fewer than `MIN_FINDINGS`/`MIN_ASSETS` were extracted (an empty source would make every array test pass), or if rejected/total exceeds the reject ratio.
 
 ## Setup
 Python 3.10+. Run everything from the repo root; `.env` lives there.
@@ -27,27 +32,34 @@ pytest
 ## Run
 ```
 vipr-drata --local                    # synthetic data in ./local_data, no Databricks, no push
-vipr-drata --local --local-rows 170000   # volume check: records, sizes, timing
+vipr-drata --local --local-rows 170000   # volume check (data in ./local_data/scale): records, sizes
 vipr-drata --local --push             # same, push to Drata sandbox
 vipr-drata --dry-run                  # real Databricks, no push
 vipr-drata                            # push (sandbox unless --drata-prod)
-vipr-drata --push-mode session        # atomic replace; default is upsert
+vipr-drata --push-mode upsert         # update only (default is session)
 ```
 Output in `./output`: `records.json` (exactly what is submitted), `_rejected.json`, `_profile.json` (`_failed.json` on push errors).
 `_profile.json` explains null fields: `tool_severity` keys/values seen, asset join outcomes, per-column null counts.
+Tunables (all env vars, see `.env.example`): `FINDING_LANE_BUCKETS`, `ASSET_BUCKETS`, `CLOSED_LOOKBACK_DAYS`, `MAX_SOURCE_AGE_DAYS`, `MAX_RECORD_BYTES`, `MIN_FINDINGS`, `MIN_ASSETS`, `MAX_REJECT_RATIO`, `SCAN_STALE_DAYS`.
 
 ## Drata
 1. Create one CUSTOM connection with `schemas/vipr_unified.schema.json`, display name key `displayName`.
 2. Set `DRATA_CONNECTION_ID`, `DRATA_RESOURCE_ID` and `DRATA_API_KEY` (create/update scope).
 3. Prod: `DRATA_API_KEY_PROD` and `--drata-prod`.
 
-Custom test (Advanced editor). Filtering criteria, Inclusion: `{"all":[{"fact":"recordType","operator":"equal","value":"findingBatch"}]}`. Condition, every open finding within SLA:
+Custom tests (Advanced editor). SLA for critical and high findings: filtering criteria, Inclusion:
+```json
+{"all":[{"fact":"recordType","operator":"equal","value":"findingBatch"},
+        {"any":[{"fact":"severityLane","operator":"equal","value":"critical"},
+                {"fact":"severityLane","operator":"equal","value":"high"}]}]}
+```
+Condition (every open finding within SLA):
 ```json
 {"all":[{"fact":"findings","operator":"all","value":{"any":[
   {"fact":"open","operator":"equal","value":false},
   {"fact":"slaBreached","operator":"equal","value":false}]}}]}
 ```
-Data freshness: filter `recordType` equal `summary`, condition `{"all":[{"fact":"sourceFresh","operator":"equal","value":true}]}`.
+Freshness: filter `recordType` equal `summary`; condition `sourceFresh` equal `true` (source data age at push time) plus `generatedAt` Within Last (Days) 2 (the nightly job ran).
 
 ## Databricks
 Set `DATABRICKS_{HOST,TOKEN,CLIENT_ID,CLIENT_SECRET}_{TEST|PROD}` (chosen by `--workspace`) and `VIPR_*_TABLE` in `.env`. Optional `TENABLE_ASSETS_TABLE` adds Tenable scan evidence.
@@ -59,4 +71,4 @@ Deploy: bump `version` in `pyproject.toml`, then `databricks bundle deploy -t te
 
 ## Exit codes
 `0` ok, `1` push or Databricks extraction failure, `2` config or guard abort (missing settings, reject ratio, test tables with `--drata-prod`).
-Stale `_failed.json` and `partial.json` are deleted at the start of each run; `partial.json` only appears after a crash.
+A stale `_failed.json` is deleted at the start of each run. SIGTERM (job cancel) cancels an open session.

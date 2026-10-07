@@ -9,11 +9,12 @@ import requests
 
 from vipr_drata.db.queries import is_true, rows_to_records
 from helpers import flatten
-from vipr_drata.batching import build_records
+from vipr_drata.batching import LANES, build_records
 from vipr_drata.transform import (build_payloads, extract_asset_features, extract_finding_features,
                                   index_tenable_assets, match_tenable, scanner_severity)
 
 NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
+LB = {lane: 1 for lane in LANES}
 
 
 def finding(**kw):
@@ -69,11 +70,12 @@ def _strict():
     asset["properties"]["tenableMatch"] = {"enum": ["matched", "none", "ambiguous", "not_configured", "no_data", None]}
     asset["required"] = ["id", "isActive", "viprLastSeenStale"]
     s["properties"]["recordType"] = {"enum": ["summary", "findingBatch", "assetBatch"]}
+    s["properties"]["severityLane"] = {"enum": list(LANES) + [None]}
     s["allOf"] = [
         {"if": {"properties": {"recordType": {"const": "summary"}}, "required": ["recordType"]},
          "then": {"required": ["generatedAt", "sourceFresh", "openFindingCount", "openSlaBreachedCount", "rejectedCount"]}},
         {"if": {"properties": {"recordType": {"const": "findingBatch"}}, "required": ["recordType"]},
-         "then": {"required": ["findings", "bucket", "bucketCount", "itemCount"]}},
+         "then": {"required": ["findings", "bucket", "bucketCount", "itemCount", "severityLane"]}},
         {"if": {"properties": {"recordType": {"const": "assetBatch"}}, "required": ["recordType"]},
          "then": {"required": ["assets", "bucket", "bucketCount", "itemCount"]}},
     ]
@@ -97,7 +99,7 @@ def test_batch_records_match_shipped_and_strict_schema():
          {"finding": finding(silk_id="f2", tool_severity="", open_cves=None), "assets": []}],
         [{"silk_id": "a1", "last_seen": "2026-09-30 00:00:00", "is_active": "true", "open_findings_count": "3"},
          {"silk_id": "a2", "is_active": "false"}], 7, NOW)
-    records = build_records(fs, sc, now=NOW, finding_buckets=4, asset_buckets=2)
+    records = build_records(fs, sc, now=NOW, lane_buckets=LB, asset_buckets=2)
     plain, strict = jsonschema.Draft202012Validator(_schema()), jsonschema.Draft202012Validator(_strict())
     for rec in records:
         plain.validate(rec)
@@ -110,8 +112,12 @@ def test_batch_records_match_shipped_and_strict_schema():
 def test_same_source_id_in_both_tables_is_fine_because_arrays_are_separate():
     fs, sc, _ = build_payloads([{"finding": finding(silk_id="x"), "assets": []}],
                                [{"silk_id": "x", "is_active": "true"}], 7, NOW)
-    flat = flatten(build_records(fs, sc, now=NOW, finding_buckets=2, asset_buckets=2))
+    flat = flatten(build_records(fs, sc, now=NOW, lane_buckets=LB, asset_buckets=2))
     assert "x" in flat["findings"] and "x" in flat["assets"]
+
+
+def _pick(recs, kind, field=None):
+    return next(r for r in recs if r["recordType"] == kind and (field is None or r.get(field)))
 
 
 @pytest.mark.parametrize("path,bad", [
@@ -120,11 +126,13 @@ def test_same_source_id_in_both_tables_is_fine_because_arrays_are_separate():
     (("assets", 0, "tenableMatch"), "maybe"),
     (("findings", 0, "cveCount"), "3"),
     (("itemCount",), "many"),
+    (("severityLane",), "urgent"),
 ])
 def test_unified_schema_rejects_bad_records(path, bad):
     fs, sc, _ = build_payloads([{"finding": finding(), "assets": []}], [{"silk_id": "a1", "is_active": "true"}], 7, NOW)
-    recs = build_records(fs, sc, now=NOW, finding_buckets=1, asset_buckets=1)
-    rec = recs[2] if path[0] == "assets" else recs[1] if path[0] == "findings" else recs[1]
+    recs = build_records(fs, sc, now=NOW, lane_buckets=LB, asset_buckets=1)
+    rec = _pick(recs, "assetBatch", "assets") if path[0] == "assets" else _pick(recs, "findingBatch", "findings")
+    jsonschema.Draft202012Validator(_strict()).validate(rec)
     node = rec
     for p in path[:-1]:
         node = node[p]
@@ -135,9 +143,11 @@ def test_unified_schema_rejects_bad_records(path, bad):
 
 def test_strict_schema_requires_type_specific_fields():
     fs, sc, _ = build_payloads([{"finding": finding(), "assets": []}], [{"silk_id": "a1", "is_active": "true"}], 7, NOW)
-    recs = build_records(fs, sc, now=NOW, finding_buckets=1, asset_buckets=1)
+    recs = build_records(fs, sc, now=NOW, lane_buckets=LB, asset_buckets=1, source_dates={"findings": NOW, "assets": NOW})
     v = jsonschema.Draft202012Validator(_strict())
-    for rec, key in ((recs[0], "sourceFresh"), (recs[1], "findings"), (recs[2], "assets")):
+    for rec, key in ((recs[0], "sourceFresh"), (_pick(recs, "findingBatch"), "findings"), (_pick(recs, "findingBatch"), "severityLane"),
+                     (_pick(recs, "assetBatch"), "assets")):
+        v.validate(rec)
         with pytest.raises(jsonschema.ValidationError):
             v.validate({k: x for k, x in rec.items() if k != key})
 

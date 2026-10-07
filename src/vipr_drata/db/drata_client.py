@@ -6,18 +6,23 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
-MAX_BODY_BYTES = 4 * 1024 * 1024  # Drata limit 5 MB
-RECORD_ERRORS = {400, 413, 422}  # other 4xx are request-level: stop sending
+MAX_BODY_BYTES = 4 * 1024 * 1024
+RECORD_ERRORS = {400, 413, 422}
 PERMANENT = (requests.exceptions.InvalidHeader, requests.exceptions.InvalidURL,
              requests.exceptions.InvalidSchema, requests.exceptions.MissingSchema)
 INTERRUPTED = "interrupted"
 MAX_RETRY_AFTER = 120.0
+WRAPPER_KEYS = ("data", "results", "items", "records")
+
+
+def dumps(body):
+    return json.dumps(body, separators=(",", ":"), default=str)
 
 
 def chunk_records(records, batch_size=100, max_bytes=MAX_BODY_BYTES):
     batch, size = [], 0
     for r in records:
-        n = len(json.dumps(r, default=str))
+        n = len(dumps(r))
         if batch and (len(batch) >= batch_size or size + n > max_bytes):
             yield batch
             batch, size = [], 0
@@ -39,6 +44,11 @@ class DrataClient:
         self.backoff = backoff
         self._local = threading.local()
         self._fatal = None
+        self._unverified = []
+
+    @property
+    def unverified(self):
+        return len(self._unverified)
 
     def _build_session(self):
         s = requests.Session()
@@ -58,7 +68,7 @@ class DrataClient:
         try:
             v = float(resp.headers.get("Retry-After"))
         except (TypeError, ValueError):
-            return default  # Retry-After may be an HTTP-date
+            return default
         if not math.isfinite(v) or v < 0:
             return default
         return min(v, MAX_RETRY_AFTER)
@@ -71,11 +81,12 @@ class DrataClient:
         errors = limits = 0
         max_errors = 1 if force else self.max_errors
         max_limits = 1 if force else self.max_rate_limits
+        payload = dumps(body)
         while True:
             if self._fatal == INTERRUPTED and not force:
                 return False, INTERRUPTED, None
             try:
-                resp = self._session().post(url, json=body, timeout=60)
+                resp = self._session().post(url, data=payload, timeout=60)
             except PERMANENT as e:
                 self._fatal = "request rejected locally: %s" % type(e).__name__
                 return False, self._fatal, None
@@ -103,19 +114,23 @@ class DrataClient:
             else:
                 return True, None, resp
 
-    @staticmethod
-    def _item_errors(resp, batch):
+    def _item_errors(self, resp, batch):
         try:
             data = resp.json()
         except ValueError:
-            return []
+            data = None
+        if isinstance(data, dict):
+            data = next((data[k] for k in WRAPPER_KEYS if isinstance(data.get(k), list)), data)
         if not isinstance(data, list):
+            if len(batch) > 1:
+                self._unverified.append(1)
             return []
         out = []
         for rec, item in zip(batch, data):
             status = item.get("statusCode") if isinstance(item, dict) else None
             if status is not None and status not in (200, 201):
-                msg = ((item.get("error") or {}).get("message") if isinstance(item.get("error"), dict) else None) or ""
+                err = item.get("error")
+                msg = (err.get("message") if isinstance(err, dict) else err) or ""
                 out.append({"id": rec.get("id"), "error": "item status %s: %s" % (status, str(msg)[:200])})
         out += [{"id": rec.get("id"), "error": "no per-item result returned"} for rec in batch[len(data):]]
         return out
@@ -133,11 +148,10 @@ class DrataClient:
                 if self._fatal:
                     failed.append({"id": rec.get("id"), "error": "not sent: " + self._fatal})
                     continue
-                g, e = self._post(url, {"data": rec})
-                if g:
-                    good += 1
-                else:
-                    failed.append({"id": rec.get("id"), "error": e})
+                ok1, err1, resp1 = self._send(url, {"data": [rec]})
+                bad = self._item_errors(resp1, [rec]) if ok1 else [{"id": rec.get("id"), "error": err1}]
+                good += 0 if bad else 1
+                failed.extend(bad)
             return good, failed
         return 0, [{"id": r.get("id"), "error": err} for r in batch]
 
@@ -160,11 +174,26 @@ class DrataClient:
     def upsert(self, connection_id, resource_id, records):
         return self._push_all(self._base(connection_id, resource_id) + "/records", records)
 
-    # session complete hard-deletes every record not staged
+    def _in_progress_sessions(self, base):
+        try:
+            resp = self._session().get(base + "/sessions?status=IN_PROGRESS", timeout=30)
+            if not isinstance(resp.status_code, int) or resp.status_code >= 400:
+                return []
+            data = resp.json()
+        except (requests.RequestException, ValueError):
+            return []
+        if isinstance(data, dict):
+            data = next((data[k] for k in WRAPPER_KEYS if isinstance(data.get(k), list)), [])
+        ids = [(i.get("sessionId") or i.get("id")) if isinstance(i, dict) else i for i in data] if isinstance(data, list) else []
+        return [str(i) for i in ids if i]
+
     def replace_via_session(self, connection_id, resource_id, records, session_id):
         if not records:
             return 0, [{"id": None, "error": "empty snapshot: refusing session replace"}], "skipped"
         base = self._base(connection_id, resource_id)
+        for stale in self._in_progress_sessions(base):
+            if stale != session_id:
+                self._post("%s/sessions/%s/actions" % (base, stale), {"action": "cancel"}, force=True)
         try:
             ok, failed = self._push_all("%s/sessions/%s" % (base, session_id), records)
         except BaseException:

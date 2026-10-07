@@ -1,7 +1,7 @@
 import argparse
-import atexit
 import json
 import os
+import signal
 import sys
 from datetime import datetime, timezone
 
@@ -11,7 +11,8 @@ from .db.queries import is_true
 from .db.secrets import ConfigError
 from .etl.extract import extract_all, merge
 from .etl.local import load_local_tables
-from .batching import batch_date, build_records, size_of
+from .batching import (DEFAULT_ASSET_BUCKETS, MAX_BUCKETS, MAX_RECORD_BYTES_LIMIT, batch_time, build_records,
+                       parse_lane_buckets, size_of)
 from .etl.sample_data import write_scale_data, write_sample_data
 from .profile import build_profile, summary
 from .transform import SEVERITY_ORDER, build_payloads
@@ -76,24 +77,29 @@ def build_parser():
     p.add_argument("--drata-prod", action="store_true", default=is_true(os.getenv("DRATA_PROD")),
                    help="push to Drata prod tenant (separate credentials, no sandbox fallback)")
     p.add_argument("--push-mode", choices=["upsert", "session"], default=None,
-                   help="upsert (default, never deletes) | session (atomic snapshot replace; hard-deletes records "
-                        "not in this run; refused if anything was rejected). Env: DRATA_PUSH_MODE")
+                   help="session (default): stage everything, then atomically replace the dataset, removing any "
+                        "record not in this run | upsert: update only. Env: DRATA_PUSH_MODE")
     p.add_argument("--scanner-tool", default=os.getenv("SCANNER_TOOL") or "tenable",
                    help="substring of the tool_severity key compared with Vipr severity (default tenable)")
     p.add_argument("--scanner-severity-map", default=os.getenv("SCANNER_SEVERITY_MAP", ""),
                    help='JSON map of raw tool values to info|low|medium|high|critical, e.g. {"1":"low","2":"medium"}')
-    p.add_argument("--finding-buckets", type=int, default=_env_number("FINDING_BUCKETS", 64, int),
-                   help="fixed number of finding batch records submitted every run (default 64)")
-    p.add_argument("--asset-buckets", type=int, default=_env_number("ASSET_BUCKETS", 16, int),
-                   help="fixed number of asset batch records submitted every run (default 16)")
+    p.add_argument("--finding-lane-buckets", default=os.getenv("FINDING_LANE_BUCKETS", ""),
+                   help='JSON minimum batches per severity lane, default {"critical":1,"high":2,"medium":4,"low":4,"info":1,"unknown":1}; '
+                        "grows automatically in session mode, exact in upsert mode")
+    p.add_argument("--asset-buckets", type=int, default=_env_number("ASSET_BUCKETS", DEFAULT_ASSET_BUCKETS, int),
+                   help="minimum asset batch records (default 4); grows automatically in session mode")
     p.add_argument("--closed-lookback-days", type=int, default=_env_number("CLOSED_LOOKBACK_DAYS", 90, int),
                    help="closed findings older than this are left out (default 90)")
     p.add_argument("--max-source-age-days", type=int, default=_env_number("MAX_SOURCE_AGE_DAYS", 3, int),
-                   help="summary sourceFresh is false when the newest source batch is older (default 3)")
+                   help="summary sourceFresh is false when the oldest source batch is older (default 3)")
     p.add_argument("--max-record-bytes", type=int, default=_env_number("MAX_RECORD_BYTES", 4000000, int),
-                   help="abort before pushing if any record is larger (Drata limit is 5 MB)")
+                   help="abort before pushing if any record is larger (max 4500000; Drata limit is 5 MB)")
+    p.add_argument("--min-findings", type=int, default=_env_number("MIN_FINDINGS", 1, int),
+                   help="abort before pushing if fewer findings were extracted (default 1)")
+    p.add_argument("--min-assets", type=int, default=_env_number("MIN_ASSETS", 1, int),
+                   help="abort before pushing if fewer assets were extracted (default 1)")
     p.add_argument("--local-rows", type=int, default=_env_number("LOCAL_ROWS", 0, int),
-                   help="with --local: generate this many synthetic findings (assets = rows/8) to check volume")
+                   help="with --local: generate this many synthetic findings (assets = rows/8) under <local-data>/scale")
     p.add_argument("--max-reject-ratio", type=float, default=_env_number("MAX_REJECT_RATIO", -1.0, float),
                    help="abort before pushing if rejected/total exceeds this (default 0.05; disabled with --local, "
                         "whose sample data has deliberate rejects)")
@@ -110,12 +116,24 @@ def build_parser():
     return p
 
 
+def _terminate(signum, frame):
+    raise KeyboardInterrupt
+
+
 def main(argv=None):
+    previous = None
+    try:
+        previous = signal.signal(signal.SIGTERM, _terminate)
+    except (ValueError, OSError):
+        pass
     try:
         return _main(list(sys.argv[1:] if argv is None else argv))
     except ConfigError as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
 
 
 def _main(argv):
@@ -137,9 +155,18 @@ def _main(argv):
 
     if args.max_reject_ratio < 0:
         args.max_reject_ratio = 1.0 if args.local else 0.05
-    push_mode = args.push_mode or os.getenv("DRATA_PUSH_MODE") or "upsert"
+    push_mode = args.push_mode or os.getenv("DRATA_PUSH_MODE") or "session"
     if push_mode not in ("upsert", "session"):
         p.error("invalid push mode %r (DRATA_PUSH_MODE): use upsert or session" % push_mode)
+    lane_buckets = parse_lane_buckets(args.finding_lane_buckets)
+    for name, ok in (("--asset-buckets", 1 <= args.asset_buckets <= MAX_BUCKETS),
+                     ("--closed-lookback-days", args.closed_lookback_days >= 1),
+                     ("--max-source-age-days", args.max_source_age_days >= 0),
+                     ("--max-record-bytes", 100_000 <= args.max_record_bytes <= MAX_RECORD_BYTES_LIMIT),
+                     ("--min-findings/--min-assets", args.min_findings >= 0 and args.min_assets >= 0),
+                     ("--stale-days", args.stale_days >= 0)):
+        if not ok:
+            p.error("%s out of range (buckets 1-%d, lookback >= 1, record bytes 100000-%d)" % (name, MAX_BUCKETS, MAX_RECORD_BYTES_LIMIT))
     scale = parse_scale(args.scanner_severity_map)
     if scale is None:
         p.error("--scanner-severity-map must be a JSON object mapping to info|low|medium|high|critical")
@@ -164,12 +191,10 @@ def _main(argv):
     for stale in ("_failed.json", "partial.json"):
         if os.path.exists(os.path.join(args.output_dir, stale)):
             os.remove(os.path.join(args.output_dir, stale))
-    state = {"incomplete": True}
-    atexit.register(lambda: state.get("incomplete") and len(state) > 1 and
-                    _dump(os.path.join(args.output_dir, "partial.json"), state))
 
     if args.local:
         if args.local_rows > 0:
+            args.local_data = os.path.join(args.local_data, "scale")
             write_scale_data(args.local_data, args.local_rows)
             print("LOCAL MODE: generated %d synthetic findings in %s" % (args.local_rows, args.local_data))
         elif not _has_tables(args.local_data):
@@ -190,12 +215,14 @@ def _main(argv):
                                                tenable_assets=tables.get("tenable_assets"),
                                                scanner_tool=args.scanner_tool, scanner_scale=scale)
     now = datetime.now(timezone.utc)
+    source_dates = {label: batch_time(tables.get(label, [])) for label in ("findings", "assets")}
+    if tables.get("tenable_assets") is not None:
+        source_dates["tenable_assets"] = batch_time(tables["tenable_assets"])
     records = build_records(
-        findings, scans, now=now, finding_buckets=args.finding_buckets, asset_buckets=args.asset_buckets,
+        findings, scans, now=now, lane_buckets=lane_buckets, asset_buckets=args.asset_buckets,
         closed_lookback_days=args.closed_lookback_days, max_source_age_days=args.max_source_age_days,
-        max_record_bytes=args.max_record_bytes, rejected=len(rejected),
-        source_date=batch_date(tables.get("findings", []), tables.get("assets", [])))
-    state.update(records=records, rejected=rejected)
+        max_record_bytes=args.max_record_bytes, rejected=len(rejected), source_dates=source_dates,
+        grow_buckets=push_mode == "session")
 
     _dump(os.path.join(args.output_dir, "records.json"), records, indent=None)
     try:
@@ -211,15 +238,21 @@ def _main(argv):
     if rejected:
         print("rejected sample: %s" % [(r["resource"], r["reason"]) for r in rejected[:5]])
 
+    short = [n for n, have, need in (("findings", len(findings), args.min_findings), ("assets", len(scans), args.min_assets))
+             if have < need]
+    if short:
+        print("%s: extracted too few %s (need MIN_FINDINGS=%d / MIN_ASSETS=%d); nothing pushed" %
+              ("WARNING" if args.dry_run else "ABORT", " and ".join(short), args.min_findings, args.min_assets),
+              file=sys.stderr)
     if args.dry_run:
-        state["incomplete"] = False
         return 0
+    if short:
+        return 2
 
     total = len(findings) + len(scans) + len(rejected)
     if total and len(rejected) / total > args.max_reject_ratio:
         print("ABORT: rejected ratio %.1f%% > %.1f%%; nothing pushed" %
               (100.0 * len(rejected) / total, 100.0 * args.max_reject_ratio), file=sys.stderr)
-        state["incomplete"] = False
         return 2
 
     print("Drata tenant: %s | push mode: %s" % ("PROD" if args.drata_prod else "sandbox", push_mode))
@@ -228,22 +261,18 @@ def _main(argv):
     session_id = "vipr-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     conn, res = os.environ["DRATA_CONNECTION_ID"], os.environ["DRATA_RESOURCE_ID"]
     if push_mode == "session":
-        # completing would hard-delete live records for rejected ids
-        if rejected:
-            failed = [{"id": None, "error": "%d rejected record(s): session replace refused" % len(rejected)}]
-            ok, action = 0, "skipped"
-        else:
-            ok, failed, action = dc.replace_via_session(conn, res, records, session_id)
+        ok, failed, action = dc.replace_via_session(conn, res, records, session_id)
         print("session=%s pushed=%d failed=%d -> %s" % (session_id, ok, len(failed), action))
     else:
-        ok, failed = dc.upsert(conn, res, records) if records else (0, [])
+        ok, failed = dc.upsert(conn, res, records)
         print("upsert pushed=%d failed=%d" % (ok, len(failed)))
+    if dc.unverified:
+        print("warning: %d bulk response(s) carried no per-item results; failures inside them would be invisible"
+              % dc.unverified, file=sys.stderr)
     if failed:
         _dump(os.path.join(args.output_dir, "_failed.json"), failed)
         print("failures (first 5): %s" % failed[:5], file=sys.stderr)
-    failed_total = len(failed)
-    state["incomplete"] = False
-    return 1 if failed_total else 0
+    return 1 if failed else 0
 
 
 def run():

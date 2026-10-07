@@ -19,13 +19,21 @@ variables:
   resource_id:
     default: ""
   push_mode:
-    default: upsert
-  finding_buckets:
-    default: "64"
+    default: session
+  finding_lane_buckets:
+    default: ""
   asset_buckets:
     default: "16"
   closed_lookback_days:
     default: "90"
+  max_source_age_days:
+    default: "3"
+  max_record_bytes:
+    default: "4000000"
+  min_findings:
+    default: "1"
+  min_assets:
+    default: "1"
   scanner_tool:
     default: tenable
   scanner_severity_map:
@@ -69,11 +77,19 @@ resources:
               - --env
               - DRATA_PUSH_MODE=${var.push_mode}
               - --env
-              - FINDING_BUCKETS=${var.finding_buckets}
+              - FINDING_LANE_BUCKETS=${var.finding_lane_buckets}
               - --env
               - ASSET_BUCKETS=${var.asset_buckets}
               - --env
               - CLOSED_LOOKBACK_DAYS=${var.closed_lookback_days}
+              - --env
+              - MAX_SOURCE_AGE_DAYS=${var.max_source_age_days}
+              - --env
+              - MAX_RECORD_BYTES=${var.max_record_bytes}
+              - --env
+              - MIN_FINDINGS=${var.min_findings}
+              - --env
+              - MIN_ASSETS=${var.min_assets}
               - --env
               - SCANNER_TOOL=${var.scanner_tool}
               - --env
