@@ -91,8 +91,8 @@ class DrataClient:
         max_limits = 1 if force else self.max_rate_limits
         payload = dumps(body)
         while True:
-            if self._fatal == INTERRUPTED and not force:
-                return False, INTERRUPTED, None
+            if self._fatal and not force:
+                return False, self._fatal, None
             try:
                 resp = self._session().post(url, data=payload, timeout=60)
             except PERMANENT as e:

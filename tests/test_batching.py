@@ -436,3 +436,13 @@ def test_sleeping_is_interruptible():
     threading.Timer(0.1, c._stop.set).start()
     c._sleep(30)
     assert time.monotonic() - started < 5
+
+
+def test_in_flight_workers_stop_retrying_once_any_worker_gives_up():
+    sess = mock.Mock()
+    sess.post.return_value = _resp(200, None)
+    c = _client(sess)
+    c._fatal = "rate limited: retries exhausted"
+    assert c._send("http://x/y", {"data": []}) == (False, "rate limited: retries exhausted", None)
+    assert sess.post.call_count == 0
+    assert c._send("http://x/y", {"action": "cancel"}, force=True)[0] is True and sess.post.call_count == 1
