@@ -20,6 +20,12 @@ variables:
     default: ""
   push_mode:
     default: upsert
+  finding_buckets:
+    default: "64"
+  asset_buckets:
+    default: "16"
+  closed_lookback_days:
+    default: "90"
   scanner_tool:
     default: tenable
   scanner_severity_map:
@@ -62,6 +68,12 @@ resources:
               - DRATA_PROD=${var.drata_prod}
               - --env
               - DRATA_PUSH_MODE=${var.push_mode}
+              - --env
+              - FINDING_BUCKETS=${var.finding_buckets}
+              - --env
+              - ASSET_BUCKETS=${var.asset_buckets}
+              - --env
+              - CLOSED_LOOKBACK_DAYS=${var.closed_lookback_days}
               - --env
               - SCANNER_TOOL=${var.scanner_tool}
               - --env

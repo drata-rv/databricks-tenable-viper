@@ -6,204 +6,370 @@
     },
     "recordType": {
       "type": "string",
-      "description": "finding | asset"
-    },
-    "sourceId": {
-      "type": "string"
+      "description": "summary | findingBatch | assetBatch"
     },
     "displayName": {
       "type": "string"
     },
-    "name": {
+    "generatedAt": {
       "type": [
         "string",
         "null"
       ]
     },
-    "lastSeen": {
+    "sourceBatchDate": {
       "type": [
         "string",
         "null"
       ]
     },
-    "displayId": {
+    "sourceBatchAgeDays": {
       "type": [
-        "string",
+        "integer",
         "null"
       ]
     },
-    "viprSeverity": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "description": "info | low | medium | high | critical"
-    },
-    "scannerSeverity": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "description": "info | low | medium | high | critical"
-    },
-    "severityChanged": {
+    "sourceFresh": {
       "type": [
         "boolean",
         "null"
       ]
     },
-    "severityDirection": {
+    "bucket": {
       "type": [
-        "string",
-        "null"
-      ],
-      "description": "downgraded | upgraded"
-    },
-    "open": {
-      "type": [
-        "boolean",
+        "integer",
         "null"
       ]
     },
-    "ignored": {
+    "bucketCount": {
       "type": [
-        "boolean",
+        "integer",
         "null"
       ]
     },
-    "hasTicket": {
+    "itemCount": {
       "type": [
-        "boolean",
+        "integer",
         "null"
       ]
     },
-    "missingTicket": {
+    "findingBuckets": {
       "type": [
-        "boolean",
+        "integer",
         "null"
       ]
     },
-    "slaDate": {
+    "assetBuckets": {
       "type": [
-        "string",
+        "integer",
         "null"
       ]
     },
-    "slaBreached": {
+    "findingCount": {
       "type": [
-        "boolean",
+        "integer",
         "null"
       ]
     },
-    "closedAfterSla": {
+    "openFindingCount": {
       "type": [
-        "boolean",
+        "integer",
         "null"
       ]
     },
-    "firstSeen": {
+    "openSlaBreachedCount": {
       "type": [
-        "string",
+        "integer",
         "null"
       ]
     },
-    "closedAt": {
+    "openSlaUnknownCount": {
       "type": [
-        "string",
+        "integer",
         "null"
       ]
     },
-    "cves": {
+    "openMissingTicketCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "openTicketUnknownCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "severityChangedCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "closedExcludedCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "rejectedCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "assetCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "assetsViprStaleCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "assetsTenableStaleCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "assetsTenableUnmatchedCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "findings": {
       "type": [
         "array",
         "null"
       ],
       "items": {
-        "type": "string"
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "displayId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "viprSeverity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "info | low | medium | high | critical"
+          },
+          "scannerSeverity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "info | low | medium | high | critical"
+          },
+          "severityChanged": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "severityDirection": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "downgraded | upgraded"
+          },
+          "toolSeverities": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "open": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "ignored": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "hasTicket": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "missingTicket": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "slaDate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slaBreached": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "closedAfterSla": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "firstSeen": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "closedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "assetId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "assetName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cves": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "cveCount": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": true
       }
     },
-    "assetId": {
+    "assets": {
       "type": [
-        "string",
-        "null"
-      ]
-    },
-    "assetName": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "assetType": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "isActive": {
-      "type": [
-        "boolean",
-        "null"
-      ]
-    },
-    "daysSinceSeen": {
-      "type": [
-        "integer",
-        "null"
-      ]
-    },
-    "viprLastSeenStale": {
-      "type": [
-        "boolean",
-        "null"
-      ]
-    },
-    "openFindingsCount": {
-      "type": [
-        "integer",
-        "null"
-      ]
-    },
-    "tenableMatch": {
-      "type": "string",
-      "description": "matched | none | ambiguous | not_configured | no_data"
-    },
-    "tenableLastScan": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "tenableDaysSinceScan": {
-      "type": [
-        "integer",
-        "null"
-      ]
-    },
-    "tenableScanStale": {
-      "type": [
-        "boolean",
-        "null"
-      ]
-    },
-    "tenableLastAuthenticatedScan": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "toolSeverities": {
-      "type": [
-        "string",
+        "array",
         "null"
       ],
-      "description": "all tool ratings as tool=value, comma separated"
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "assetType": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "isActive": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "lastSeen": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "daysSinceSeen": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "viprLastSeenStale": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "openFindingsCount": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tenableMatch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "matched | none | ambiguous | not_configured | no_data"
+          },
+          "tenableLastScan": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tenableDaysSinceScan": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tenableScanStale": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "tenableLastAuthenticatedScan": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
     }
   },
   "required": [
     "id",
     "recordType",
-    "sourceId",
     "displayName"
   ],
   "additionalProperties": true

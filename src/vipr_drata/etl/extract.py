@@ -11,13 +11,14 @@ TABLE_REGISTRY = [
     TableSpec("findings", "VIPR_FINDINGS_TABLE", "silk_id", True, (
         "silk_id", "finding_display_id", "display_name", "severity", "tool_severity", "open",
         "is_ignored", "has_ticket", "sla_date", "first_seen", "last_seen", "closed_timestamp",
-        "open_cves", "asset_silk_id")),
+        "open_cves", "asset_silk_id", "__date", "__hour")),
     TableSpec("assets", "VIPR_ASSETS_TABLE", "silk_id", True, (
         "silk_id", "name", "asset_type", "is_active", "last_seen", "open_findings_count",
-        "hostnames", "mac_addresses")),
+        "hostnames", "mac_addresses", "__date", "__hour")),
     TableSpec("tenable_assets", "TENABLE_ASSETS_TABLE", "id", False, (
         "id", "hostnames", "fqdns", "mac_addresses", "last_scan_time",
-        "last_authenticated_scan_date", "last_seen", "has_agent", "tenable_agent_days_since_active")),
+        "last_authenticated_scan_date", "last_seen", "has_agent", "tenable_agent_days_since_active",
+        "__date", "__hour")),
 ]
 
 

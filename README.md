@@ -1,6 +1,19 @@
 # vipr-drata
 
-Databricks Vipr tables -> one Drata Custom Connection. Each record has `recordType` `finding` or `asset`; ids are `finding:<silk_id>` / `asset:<silk_id>`.
+Databricks Vipr tables -> one Drata Custom Connection.
+
+## Data model
+Each run submits the same small, fixed set of records (default 81), never one record per finding:
+
+| Record id | `recordType` | Content |
+|---|---|---|
+| `summary` | `summary` | counts, `sourceFresh`, `sourceBatchDate`, `rejectedCount` |
+| `findings-000` ... `findings-063` | `findingBatch` | `findings[]`: one item per finding |
+| `assets-000` ... `assets-015` | `assetBatch` | `assets[]`: one item per asset |
+
+Items are assigned to a batch by a stable hash of their id, so a finding lands in the same record every night. Empty batches are still sent, so nothing goes stale. Closed findings older than `CLOSED_LOOKBACK_DAYS` (90) are left out. Tests evaluate the items inside the arrays (Advanced editor, see below). About 170k findings is roughly 80 MB over 81 requests; the run aborts (exit 2) if any record exceeds `MAX_RECORD_BYTES` (4 MB; Drata limit 5 MB) and tells you which bucket setting to raise.
+
+Changing `FINDING_BUCKETS` or `ASSET_BUCKETS` re-homes items: run once with `--push-mode session` so the old records are replaced, not orphaned.
 
 ## Setup
 Python 3.10+. Run everything from the repo root; `.env` lives there.
@@ -14,19 +27,27 @@ pytest
 ## Run
 ```
 vipr-drata --local                    # synthetic data in ./local_data, no Databricks, no push
+vipr-drata --local --local-rows 170000   # volume check: records, sizes, timing
 vipr-drata --local --push             # same, push to Drata sandbox
 vipr-drata --dry-run                  # real Databricks, no push
 vipr-drata                            # push (sandbox unless --drata-prod)
 vipr-drata --push-mode session        # atomic replace; default is upsert
 ```
-Output in `./output`: `records.json`, `_rejected.json`, `_profile.json` (`_failed.json` on push errors).
+Output in `./output`: `records.json` (exactly what is submitted), `_rejected.json`, `_profile.json` (`_failed.json` on push errors).
 `_profile.json` explains null fields: `tool_severity` keys/values seen, asset join outcomes, per-column null counts.
 
 ## Drata
 1. Create one CUSTOM connection with `schemas/vipr_unified.schema.json`, display name key `displayName`.
 2. Set `DRATA_CONNECTION_ID`, `DRATA_RESOURCE_ID` and `DRATA_API_KEY` (create/update scope).
-3. Filter custom tests on `recordType`.
-4. Prod: `DRATA_API_KEY_PROD` and `--drata-prod`.
+3. Prod: `DRATA_API_KEY_PROD` and `--drata-prod`.
+
+Custom test (Advanced editor). Filtering criteria, Inclusion: `{"all":[{"fact":"recordType","operator":"equal","value":"findingBatch"}]}`. Condition, every open finding within SLA:
+```json
+{"all":[{"fact":"findings","operator":"all","value":{"any":[
+  {"fact":"open","operator":"equal","value":false},
+  {"fact":"slaBreached","operator":"equal","value":false}]}}]}
+```
+Data freshness: filter `recordType` equal `summary`, condition `{"all":[{"fact":"sourceFresh","operator":"equal","value":true}]}`.
 
 ## Databricks
 Set `DATABRICKS_{HOST,TOKEN,CLIENT_ID,CLIENT_SECRET}_{TEST|PROD}` (chosen by `--workspace`) and `VIPR_*_TABLE` in `.env`. Optional `TENABLE_ASSETS_TABLE` adds Tenable scan evidence.

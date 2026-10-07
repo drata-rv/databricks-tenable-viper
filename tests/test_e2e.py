@@ -3,6 +3,7 @@ from unittest import mock
 
 import pytest
 
+from helpers import flatten
 from vipr_drata import cli
 
 FINDINGS = [{"silk_id": "f1", "severity": "medium", "tool_severity": '{"tenable": "high"}', "open": "true",
@@ -34,24 +35,25 @@ def test_dry_run_end_to_end(monkeypatch, tmp_path):
     args = _env(monkeypatch, tmp_path)
     with mock.patch.object(cli, "get_client_for_env"), mock.patch("vipr_drata.etl.extract.run_sql", fake_run_sql):
         assert cli.main(args + ["--dry-run"]) == 0
-    recs = {r["id"]: r for r in json.load(open(tmp_path / "records.json"))}
-    f, a = recs["finding:f1"], recs["asset:a1"]
-    assert f["recordType"] == "finding" and f["severityDirection"] == "downgraded" and f["slaBreached"] is False
-    assert f["assetId"] == "asset:a1"
-    assert a["recordType"] == "asset" and a["viprLastSeenStale"] is True and a["tenableMatch"] == "not_configured"
+    flat = flatten(json.load(open(tmp_path / "records.json")))
+    f, a = flat["findings"]["f1"], flat["assets"]["a1"]
+    assert f["severityDirection"] == "downgraded" and f["slaBreached"] is False and f["assetId"] == "a1"
+    assert a["viprLastSeenStale"] is True and a["tenableMatch"] == "not_configured"
+    assert flat["summary"]["openFindingCount"] == 1 and flat["summary"]["assetCount"] == 1
 
 
-def test_push_sends_one_unified_batch_to_one_resource(monkeypatch, tmp_path, capsys):
+def test_push_sends_the_fixed_record_set_to_one_resource(monkeypatch, tmp_path, capsys):
     args = _env(monkeypatch, tmp_path)
     monkeypatch.setenv("DRATA_API_KEY", "sandbox-key")
     with mock.patch.object(cli, "get_client_for_env"), mock.patch("vipr_drata.etl.extract.run_sql", fake_run_sql), \
             mock.patch.object(cli, "DrataClient") as DC:
-        DC.return_value.upsert.return_value = (1, [])
+        DC.return_value.upsert.return_value = (81, [])
         assert cli.main(args) == 0
     assert DC.call_args.args[1] == "sandbox-key"
     (call,) = DC.return_value.upsert.call_args_list
     assert call.args[:2] == (CONN, RES)
-    assert [r["id"] for r in call.args[2]] == ["finding:f1", "asset:a1"]
+    ids = [r["id"] for r in call.args[2]]
+    assert ids[0] == "summary" and len(ids) == 1 + 64 + 16 and len(set(ids)) == len(ids)
     assert "Drata tenant: sandbox | push mode: upsert" in capsys.readouterr().out
 
 
@@ -93,10 +95,10 @@ def test_session_mode_clean_run_replaces_everything_in_one_session(monkeypatch, 
     args = _env(monkeypatch, tmp_path)
     monkeypatch.setenv("DRATA_API_KEY", "k")
     with mock.patch.object(cli, "get_client_for_env"), mock.patch("vipr_drata.etl.extract.run_sql", fake_run_sql), \
-            mock.patch.object(cli.DrataClient, "replace_via_session", return_value=(2, [], "complete")) as sess:
+            mock.patch.object(cli.DrataClient, "replace_via_session", return_value=(81, [], "complete")) as sess:
         assert cli.main(args + ["--push-mode", "session"]) == 0
     (call,) = sess.call_args_list
-    assert call.args[:2] == (CONN, RES) and len(call.args[2]) == 2
+    assert call.args[:2] == (CONN, RES) and len(call.args[2]) == 81
 
 
 def test_reject_ratio_guard_aborts_before_push(monkeypatch, tmp_path):
@@ -149,17 +151,17 @@ def test_local_mode_runs_without_databricks(tmp_path):
         assert cli.main(["--local", "--local-data", str(tmp_path / "data"), "--output-dir", str(out)]) == 0
     gc.assert_not_called()
     up.assert_not_called()
-    recs = {r["id"]: r for r in json.load(open(out / "records.json"))}
-    f = {k[len("finding:"):]: v for k, v in recs.items() if v["recordType"] == "finding"}
-    a = {k[len("asset:"):]: v for k, v in recs.items() if v["recordType"] == "asset"}
+    flat = flatten(json.load(open(out / "records.json")))
+    f, a = flat["findings"], flat["assets"]
     rej = json.load(open(out / "_rejected.json"))
     assert f["f-001"]["viprSeverity"] == "medium" and f["f-001"]["severityDirection"] == "downgraded"
     assert f["f-002"]["slaBreached"] and f["f-002"]["missingTicket"]
-    assert f["f-005"]["severityChanged"] is None and f["f-006"]["assetName"] is None
+    assert "severityChanged" not in f["f-005"] and f["f-006"].get("assetName") is None
     assert a["a-001"]["tenableMatch"] == "matched" and a["a-002"]["tenableMatch"] == "ambiguous"
     assert a["a-002"]["viprLastSeenStale"] is True and "a-004" not in a
     assert {(r["resource"], r["reason"]) for r in rej} == {
         ("findings", "missing silk_id"), ("assets", "conflicting duplicate asset id in latest batch")}
+    assert flat["summary"]["rejectedCount"] == 3 and flat["summary"]["sourceFresh"] is True
 
 
 def test_local_regenerates_when_dir_empty_and_rejects_prod(monkeypatch, tmp_path):

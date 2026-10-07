@@ -11,7 +11,8 @@ from .db.queries import is_true
 from .db.secrets import ConfigError
 from .etl.extract import extract_all, merge
 from .etl.local import load_local_tables
-from .etl.sample_data import write_sample_data
+from .batching import batch_date, build_records, size_of
+from .etl.sample_data import write_scale_data, write_sample_data
 from .profile import build_profile, summary
 from .transform import SEVERITY_ORDER, build_payloads
 
@@ -35,10 +36,10 @@ def apply_env_pairs(argv):
     return bad
 
 
-def _dump(path, data):
+def _dump(path, data, indent=2):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:
-        json.dump(data, f, indent=2, default=str)
+        json.dump(data, f, indent=indent, separators=None if indent else (",", ":"), default=str)
 
 
 def _has_tables(directory):
@@ -81,6 +82,18 @@ def build_parser():
                    help="substring of the tool_severity key compared with Vipr severity (default tenable)")
     p.add_argument("--scanner-severity-map", default=os.getenv("SCANNER_SEVERITY_MAP", ""),
                    help='JSON map of raw tool values to info|low|medium|high|critical, e.g. {"1":"low","2":"medium"}')
+    p.add_argument("--finding-buckets", type=int, default=_env_number("FINDING_BUCKETS", 64, int),
+                   help="fixed number of finding batch records submitted every run (default 64)")
+    p.add_argument("--asset-buckets", type=int, default=_env_number("ASSET_BUCKETS", 16, int),
+                   help="fixed number of asset batch records submitted every run (default 16)")
+    p.add_argument("--closed-lookback-days", type=int, default=_env_number("CLOSED_LOOKBACK_DAYS", 90, int),
+                   help="closed findings older than this are left out (default 90)")
+    p.add_argument("--max-source-age-days", type=int, default=_env_number("MAX_SOURCE_AGE_DAYS", 3, int),
+                   help="summary sourceFresh is false when the newest source batch is older (default 3)")
+    p.add_argument("--max-record-bytes", type=int, default=_env_number("MAX_RECORD_BYTES", 4000000, int),
+                   help="abort before pushing if any record is larger (Drata limit is 5 MB)")
+    p.add_argument("--local-rows", type=int, default=_env_number("LOCAL_ROWS", 0, int),
+                   help="with --local: generate this many synthetic findings (assets = rows/8) to check volume")
     p.add_argument("--max-reject-ratio", type=float, default=_env_number("MAX_REJECT_RATIO", -1.0, float),
                    help="abort before pushing if rejected/total exceeds this (default 0.05; disabled with --local, "
                         "whose sample data has deliberate rejects)")
@@ -156,7 +169,10 @@ def _main(argv):
                     _dump(os.path.join(args.output_dir, "partial.json"), state))
 
     if args.local:
-        if not _has_tables(args.local_data):
+        if args.local_rows > 0:
+            write_scale_data(args.local_data, args.local_rows)
+            print("LOCAL MODE: generated %d synthetic findings in %s" % (args.local_rows, args.local_data))
+        elif not _has_tables(args.local_data):
             write_sample_data(args.local_data)
             print("LOCAL MODE: generated synthetic sample tables in %s" % args.local_data)
         tables = load_local_tables(args.local_data)
@@ -173,18 +189,25 @@ def _main(argv):
     findings, scans, rejected = build_payloads(joined, assets, args.stale_days,
                                                tenable_assets=tables.get("tenable_assets"),
                                                scanner_tool=args.scanner_tool, scanner_scale=scale)
-    records = findings + scans
+    now = datetime.now(timezone.utc)
+    records = build_records(
+        findings, scans, now=now, finding_buckets=args.finding_buckets, asset_buckets=args.asset_buckets,
+        closed_lookback_days=args.closed_lookback_days, max_source_age_days=args.max_source_age_days,
+        max_record_bytes=args.max_record_bytes, rejected=len(rejected),
+        source_date=batch_date(tables.get("findings", []), tables.get("assets", [])))
     state.update(records=records, rejected=rejected)
 
-    _dump(os.path.join(args.output_dir, "records.json"), records)
+    _dump(os.path.join(args.output_dir, "records.json"), records, indent=None)
     try:
-        profile = build_profile(tables, joined, records)
+        profile = build_profile(tables, joined, findings, scans)
         _dump(os.path.join(args.output_dir, "_profile.json"), profile)
         print(summary(profile))
     except Exception as e:
         print("profile skipped: %s" % type(e).__name__, file=sys.stderr)
     _dump(os.path.join(args.output_dir, "_rejected.json"), rejected)
-    print("findings=%d assets=%d rejected=%d" % (len(findings), len(scans), len(rejected)))
+    print("findings=%d assets=%d rejected=%d records=%d largest_record=%.2fMB total=%.1fMB" % (
+        len(findings), len(scans), len(rejected), len(records), max(size_of(r) for r in records) / 1e6,
+        sum(size_of(r) for r in records) / 1e6))
     if rejected:
         print("rejected sample: %s" % [(r["resource"], r["reason"]) for r in rejected[:5]])
 
@@ -192,7 +215,7 @@ def _main(argv):
         state["incomplete"] = False
         return 0
 
-    total = len(records) + len(rejected)
+    total = len(findings) + len(scans) + len(rejected)
     if total and len(rejected) / total > args.max_reject_ratio:
         print("ABORT: rejected ratio %.1f%% > %.1f%%; nothing pushed" %
               (100.0 * len(rejected) / total, 100.0 * args.max_reject_ratio), file=sys.stderr)

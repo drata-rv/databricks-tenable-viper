@@ -8,6 +8,8 @@ import pytest
 import requests
 
 from vipr_drata.db.queries import is_true, rows_to_records
+from helpers import flatten
+from vipr_drata.batching import build_records
 from vipr_drata.transform import (build_payloads, extract_asset_features, extract_finding_features,
                                   index_tenable_assets, match_tenable, scanner_severity)
 
@@ -60,16 +62,20 @@ def _schema():
 def _strict():
     sev = {"enum": ["info", "low", "medium", "high", "critical", None]}
     s = _schema()
-    s["properties"].update(
-        recordType={"enum": ["finding", "asset"]}, viprSeverity=sev, scannerSeverity=sev,
-        severityDirection={"enum": ["downgraded", "upgraded", None]},
-        tenableMatch={"enum": ["matched", "none", "ambiguous", "not_configured", "no_data"]})
+    item = s["properties"]["findings"]["items"]
+    item["properties"].update(viprSeverity=sev, scannerSeverity=sev, severityDirection={"enum": ["downgraded", "upgraded", None]})
+    item["required"] = ["id", "open", "hasTicket", "missingTicket", "slaBreached"]
+    asset = s["properties"]["assets"]["items"]
+    asset["properties"]["tenableMatch"] = {"enum": ["matched", "none", "ambiguous", "not_configured", "no_data", None]}
+    asset["required"] = ["id", "isActive", "viprLastSeenStale"]
+    s["properties"]["recordType"] = {"enum": ["summary", "findingBatch", "assetBatch"]}
     s["allOf"] = [
-        {"if": {"properties": {"recordType": {"const": "finding"}}, "required": ["recordType"]},
-         "then": {"required": ["viprSeverity", "scannerSeverity", "severityChanged", "open", "hasTicket",
-                               "missingTicket", "slaBreached", "assetId"]}},
-        {"if": {"properties": {"recordType": {"const": "asset"}}, "required": ["recordType"]},
-         "then": {"required": ["isActive", "lastSeen", "viprLastSeenStale", "tenableMatch"]}},
+        {"if": {"properties": {"recordType": {"const": "summary"}}, "required": ["recordType"]},
+         "then": {"required": ["generatedAt", "sourceFresh", "openFindingCount", "openSlaBreachedCount", "rejectedCount"]}},
+        {"if": {"properties": {"recordType": {"const": "findingBatch"}}, "required": ["recordType"]},
+         "then": {"required": ["findings", "bucket", "bucketCount", "itemCount"]}},
+        {"if": {"properties": {"recordType": {"const": "assetBatch"}}, "required": ["recordType"]},
+         "then": {"required": ["assets", "bucket", "bucketCount", "itemCount"]}},
     ]
     return s
 
@@ -85,48 +91,55 @@ def test_shipped_schema_is_plain_drata_subset():
     assert keys(_schema()) <= {"type", "properties", "required", "additionalProperties", "items", "description"}
 
 
-def test_payloads_match_unified_schema_and_ids_are_namespaced():
+def test_batch_records_match_shipped_and_strict_schema():
     fs, sc, _ = build_payloads(
         [{"finding": finding(open_cves='["CVE-2026-1"]'), "assets": [{"silk_id": "a1", "name": "h"}]},
          {"finding": finding(silk_id="f2", tool_severity="", open_cves=None), "assets": []}],
         [{"silk_id": "a1", "last_seen": "2026-09-30 00:00:00", "is_active": "true", "open_findings_count": "3"},
          {"silk_id": "a2", "is_active": "false"}], 7, NOW)
-    validator = jsonschema.Draft202012Validator(_strict())
-    jsonschema.Draft202012Validator(_schema()).validate(fs[0])
-    for rec in fs + sc:
-        validator.validate(rec)
-    ids = [r["id"] for r in fs + sc]
-    assert len(set(ids)) == len(ids) and {r["recordType"] for r in fs + sc} == {"finding", "asset"}
-    assert fs[0]["cves"] == ["CVE-2026-1"] and sc[0]["openFindingsCount"] == 3
-    assert fs[0]["assetId"] == "asset:a1" and fs[1]["assetId"] == "asset:a1" and fs[1]["assetName"] is None
+    records = build_records(fs, sc, now=NOW, finding_buckets=4, asset_buckets=2)
+    plain, strict = jsonschema.Draft202012Validator(_schema()), jsonschema.Draft202012Validator(_strict())
+    for rec in records:
+        plain.validate(rec)
+        strict.validate(rec)
+    flat = flatten(records)
+    assert flat["findings"]["f1"]["cves"] == ["CVE-2026-1"] and flat["assets"]["a1"]["openFindingsCount"] == 3
+    assert flat["findings"]["f1"]["assetId"] == "a1" and flat["findings"]["f2"].get("assetName") is None
 
 
-def test_same_source_id_in_both_tables_does_not_collide():
+def test_same_source_id_in_both_tables_is_fine_because_arrays_are_separate():
     fs, sc, _ = build_payloads([{"finding": finding(silk_id="x"), "assets": []}],
                                [{"silk_id": "x", "is_active": "true"}], 7, NOW)
-    assert fs[0]["id"] == "finding:x" and sc[0]["id"] == "asset:x" and fs[0]["sourceId"] == sc[0]["sourceId"] == "x"
+    flat = flatten(build_records(fs, sc, now=NOW, finding_buckets=2, asset_buckets=2))
+    assert "x" in flat["findings"] and "x" in flat["assets"]
 
 
-@pytest.mark.parametrize("bad", [
-    {"recordType": "other"},
-    {"recordType": "finding", "viprSeverity": "3"},
-    {"recordType": "asset", "tenableMatch": "maybe"},
-    {"recordType": "finding", "openFindingsCount": "3"},
+@pytest.mark.parametrize("path,bad", [
+    (("recordType",), "other"),
+    (("findings", 0, "viprSeverity"), "3"),
+    (("assets", 0, "tenableMatch"), "maybe"),
+    (("findings", 0, "cveCount"), "3"),
+    (("itemCount",), "many"),
 ])
-def test_unified_schema_rejects_bad_records(bad):
+def test_unified_schema_rejects_bad_records(path, bad):
     fs, sc, _ = build_payloads([{"finding": finding(), "assets": []}], [{"silk_id": "a1", "is_active": "true"}], 7, NOW)
-    rec = dict(fs[0] if bad["recordType"] != "asset" else sc[0], **bad)
+    recs = build_records(fs, sc, now=NOW, finding_buckets=1, asset_buckets=1)
+    rec = recs[2] if path[0] == "assets" else recs[1] if path[0] == "findings" else recs[1]
+    node = rec
+    for p in path[:-1]:
+        node = node[p]
+    node[path[-1]] = bad
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.Draft202012Validator(_strict()).validate(rec)
 
 
-def test_schema_requires_type_specific_keys():
+def test_strict_schema_requires_type_specific_fields():
     fs, sc, _ = build_payloads([{"finding": finding(), "assets": []}], [{"silk_id": "a1", "is_active": "true"}], 7, NOW)
+    recs = build_records(fs, sc, now=NOW, finding_buckets=1, asset_buckets=1)
     v = jsonschema.Draft202012Validator(_strict())
-    for rec, key in ((fs[0], "slaBreached"), (sc[0], "tenableMatch")):
-        broken = {k: x for k, x in rec.items() if k != key}
+    for rec, key in ((recs[0], "sourceFresh"), (recs[1], "findings"), (recs[2], "assets")):
         with pytest.raises(jsonschema.ValidationError):
-            v.validate(broken)
+            v.validate({k: x for k, x in rec.items() if k != key})
 
 
 def test_severity_aliases_normalize():
@@ -222,7 +235,7 @@ def _asset(i, hosts=(), macs=()):
 
 def _status(assets, tenable):
     _, sc, _ = build_payloads([], assets, 7, NOW, tenable_assets=tenable)
-    return {a["sourceId"]: a["tenableMatch"] for a in sc}
+    return {a["id"]: a["tenableMatch"] for a in sc}
 
 
 def test_tenable_shared_target_and_generic_names_are_ambiguous_or_none():

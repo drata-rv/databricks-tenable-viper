@@ -4,6 +4,8 @@ from unittest import mock
 
 import pytest
 
+from helpers import flatten
+from vipr_drata.batching import finding_item
 from vipr_drata import cli
 from vipr_drata.etl.extract import merge
 from vipr_drata.profile import build_profile, summary
@@ -30,7 +32,7 @@ def profile(findings, assets, tenable=None):
     tables = {"findings": findings, "assets": assets}
     joined, arows = merge(tables)
     fs, sc, _ = build_payloads(joined, arows, 7, NOW, tenable_assets=tenable)
-    return build_profile(tables, joined, fs + sc), fs + sc
+    return build_profile(tables, joined, fs, sc), fs, sc
 
 
 def test_cli_profile_exact_counts(tmp_path, capsys):
@@ -54,7 +56,7 @@ def test_cli_profile_exact_counts(tmp_path, capsys):
 def test_profile_distinguishes_tool_severity_causes():
     rows = [F(silk_id=str(i), tool_severity=v) for i, v in enumerate(
         [None, "{}", "garbage", "['tenable', 'high']", '{"tio": "4"}', '{"tenable": null}'])]
-    p, _ = profile(rows, [A()])
+    p, _, _ = profile(rows, [A()])
     assert p["raw_tool_severity"]["rows"] == {"null": 1, "empty_map": 1, "unparseable": 2, "parsed": 2}
     assert p["raw_tool_severity"]["values"] == {"tio": {"4": 1}, "tenable": {"<null>": 1}}
 
@@ -62,10 +64,9 @@ def test_profile_distinguishes_tool_severity_causes():
 def test_profile_distinguishes_null_from_unparseable_timestamp():
     rows = [F(silk_id="1", last_seen=None), F(silk_id="2", last_seen="04/19/2022"),
             F(silk_id="3", last_seen="Apr 19, 2022"), F(silk_id="4", last_seen="2022-04-19 05:11:36")]
-    p, recs = profile(rows, [A()])
+    p, _, _ = profile(rows, [A()])
     assert p["null_counts"]["findings"]["last_seen"] == 1
     assert p["unparseable_timestamps"] == {"findings": {"last_seen": {"count": 2, "samples": ["04/19/2022", "Apr 19, 2022"]}}}
-    assert p["findings_null"]["lastSeen"] == 3
     assert "unparseable_ts={'findings': {'last_seen': 2}}" in summary(p)
 
 
@@ -74,7 +75,7 @@ def test_profile_distinguishes_asset_join_causes():
                 F(silk_id="3", asset_silk_id=" A1 "), F(silk_id="4", asset_silk_id="a1"),
                 F(silk_id="5", asset_silk_id="a2")]
     assets = [A(), A(silk_id="a2", name=None), A(silk_id="a3", name="x"), A(silk_id="a3", name="y")]
-    p, _ = profile(findings, assets)
+    p, _, _ = profile(findings, assets)
     assert p["raw_asset_resolution"] == {"no_asset_id": 1, "no_asset_row": 1, "id_format_mismatch": 1,
                                          "resolved": 1, "asset_name_null": 1}
     assert p["unmatched_asset_id_samples"] == ["zz", " A1 "]
@@ -83,25 +84,25 @@ def test_profile_distinguishes_asset_join_causes():
 def test_profile_value_buckets_are_bounded():
     rows = [F(silk_id=str(i), severity="tok-%s" % ("x" * 40), tool_severity='{"tenable": "%s"}' % ("y" * 500))
             for i in range(30)]
-    p, _ = profile(rows, [A()])
+    p, _, _ = profile(rows, [A()])
     assert p["raw_vipr_severity_values"] == {"<other>": 30}
     assert p["raw_tool_severity"]["values"]["tenable"] == {"<other>": 30}
     assert p["raw_vipr_severity_values"] != {"none": 1}
-    p2, _ = profile([F(severity=None), F(silk_id="2", severity="none")], [A()])
+    p2, _, _ = profile([F(severity=None), F(silk_id="2", severity="none")], [A()])
     assert p2["raw_vipr_severity_values"] == {"<null>": 1, "none": 1}
 
 
 def test_profile_ranks_values_by_frequency_and_unions_columns():
     rows = [F(silk_id="k%d" % i, tool_severity='{"k%d": "low"}' % i) for i in range(25)]
     rows += [F(silk_id="t%d" % i, tool_severity='{"tenable": "high"}') for i in range(100)]
-    p, _ = profile(rows, [A()])
+    p, _, _ = profile(rows, [A()])
     assert "tenable" in p["raw_tool_severity"]["values"] and len(p["raw_tool_severity"]["values"]) == 20
-    p = build_profile({"findings": [{"silk_id": "f1"}, {"silk_id": "f2", "severity": "x", "open": None}]}, [], [])
+    p = build_profile({"findings": [{"silk_id": "f1"}, {"silk_id": "f2", "severity": "x", "open": None}]}, [], [], [])
     assert p["null_counts"]["findings"] == {"open": 2, "severity": 1, "silk_id": 0}
 
 
 def test_profile_handles_empty_and_missing_tables():
-    p = build_profile({"findings": [], "assets": []}, [], [])
+    p = build_profile({"findings": [], "assets": []}, [], [], [])
     assert p["raw_rows"] == {"findings": 0, "assets": 0} and p["raw_asset_resolution"] == {}
     summary(p)
 
@@ -163,12 +164,11 @@ REAL_ASSET = A(silk_id="nationwide____DedupedHostAsset____9fbd", name=None,
 
 
 def test_real_rapid7_record_shape():
-    p, recs = profile([REAL_FINDING], [REAL_ASSET])
-    f = next(r for r in recs if r["recordType"] == "finding")
-    a = next(r for r in recs if r["recordType"] == "asset")
-    assert f["viprSeverity"] == "low" and f["scannerSeverity"] is None and f["severityChanged"] is None
-    assert f["lastSeen"] is None and f["cves"] == [] and f["slaBreached"] is True
-    assert f["assetName"] == "lapp000626" and a["name"] == "lapp000626" and a["displayName"] == "lapp000626"
+    p, fs, sc = profile([REAL_FINDING], [REAL_ASSET])
+    f, a = finding_item(fs[0]), sc[0]
+    assert f["viprSeverity"] == "low" and f.get("scannerSeverity") is None and f.get("severityChanged") is None
+    assert "lastSeen" not in f and "cves" not in f and f["cveCount"] == 0
+    assert f["slaBreached"] is True and f["assetName"] == "lapp000626" and a["name"] == "lapp000626"
     assert p["raw_tool_severity"]["keys"] == {"rapid7_insight_vm-1": 1}
     assert p["raw_tool_severity"]["vipr_severity_by_tool_value"] == {"rapid7_insight_vm-1": {"2": {"low": 1}}}
     assert p["raw_asset_resolution"] == {"name_from_hostname": 1}
@@ -176,30 +176,30 @@ def test_real_rapid7_record_shape():
 
 @pytest.mark.parametrize("name", [None, "", "null", "NULL", " - "])
 def test_null_like_asset_names_fall_back_to_hostname(name):
-    _, recs = profile([REAL_FINDING], [dict(REAL_ASSET, name=name)])
-    assert next(r for r in recs if r["recordType"] == "finding")["assetName"] == "lapp000626"
+    _, fs, _ = profile([REAL_FINDING], [dict(REAL_ASSET, name=name)])
+    assert fs[0]["assetName"] == "lapp000626"
 
 
 def test_real_asset_name_wins_and_no_hostname_stays_null():
-    _, recs = profile([REAL_FINDING], [dict(REAL_ASSET, name="Server-1")])
-    assert next(r for r in recs if r["recordType"] == "finding")["assetName"] == "Server-1"
-    _, recs = profile([REAL_FINDING], [dict(REAL_ASSET, hostnames="[]")])
-    assert next(r for r in recs if r["recordType"] == "finding")["assetName"] is None
+    _, fs, _ = profile([REAL_FINDING], [dict(REAL_ASSET, name="Server-1")])
+    assert fs[0]["assetName"] == "Server-1"
+    _, fs, _ = profile([REAL_FINDING], [dict(REAL_ASSET, hostnames="[]")])
+    assert fs[0]["assetName"] is None
 
 
 def test_crosstab_reveals_numeric_scale_across_findings():
     rows = [F(silk_id=str(i), severity=sev, tool_severity='{"rapid7_insight_vm-1":"%s"}' % val)
             for i, (sev, val) in enumerate([("LOW", "2"), ("LOW", "2"), ("MEDIUM", "3"), ("HIGH", "4"), ("HIGH", "4"),
                                             ("CRITICAL", "5"), ("LOW", "1")])]
-    p, _ = profile(rows, [A()])
+    p, _, _ = profile(rows, [A()])
     assert p["raw_tool_severity"]["vipr_severity_by_tool_value"]["rapid7_insight_vm-1"] == {
         "2": {"low": 2}, "3": {"medium": 1}, "4": {"high": 2}, "5": {"critical": 1}, "1": {"low": 1}}
 
 
 def test_tool_severities_carries_every_raw_rating():
-    _, recs = profile([REAL_FINDING, F(silk_id="2", tool_severity='{"tenable_io":"High","rapid7_insight_vm-1":"3"}'),
-                       F(silk_id="3", tool_severity="{}")], [REAL_ASSET])
-    got = {r["sourceId"]: r["toolSeverities"] for r in recs if r["recordType"] == "finding"}
+    _, fs, _ = profile([REAL_FINDING, F(silk_id="2", tool_severity='{"tenable_io":"High","rapid7_insight_vm-1":"3"}'),
+                        F(silk_id="3", tool_severity="{}")], [REAL_ASSET])
+    got = {r["id"]: r.get("toolSeverities") for r in fs}
     assert got == {REAL_FINDING["silk_id"]: "rapid7_insight_vm-1=2", "2": "rapid7_insight_vm-1=3, tenable_io=High", "3": None}
 
 
@@ -224,8 +224,8 @@ def test_cli_scanner_flags(tmp_path):
     rc = cli.main(["--local", "--local-data", str(d), "--output-dir", str(out), "--scanner-tool", "tenable",
                    "--scanner-severity-map", '{"high": "critical"}'])
     assert rc == 0
-    recs = {r["id"]: r for r in json.load(open(out / "records.json"))}
-    assert recs["finding:f-001"]["scannerSeverity"] == "critical" and recs["finding:f-001"]["toolSeverities"] == "tenable=high"
+    f = flatten(json.load(open(out / "records.json")))["findings"]
+    assert f["f-001"]["scannerSeverity"] == "critical" and f["f-001"]["toolSeverities"] == "tenable=high"
     for bad in ('not json', '[1,2]', '{"1": "urgent"}'):
         with pytest.raises(SystemExit) as e:
             cli.main(["--local", "--local-data", str(d), "--output-dir", str(out), "--scanner-severity-map", bad])

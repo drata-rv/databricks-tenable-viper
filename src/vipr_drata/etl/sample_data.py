@@ -70,10 +70,44 @@ def sample_rows(now=None):
 
 def write_sample_data(directory, now=None):
     os.makedirs(directory, exist_ok=True)
-    cols = {s.label: list(s.columns) + ["__date", "__hour"] for s in TABLE_REGISTRY}
+    cols = {s.label: list(dict.fromkeys(list(s.columns) + ["__date", "__hour"])) for s in TABLE_REGISTRY}
     for label, rows in sample_rows(now).items():
         with open(os.path.join(directory, label + ".csv"), "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=cols[label], extrasaction="ignore")
             w.writeheader()
             w.writerows([{k: ("null" if v is None else v) for k, v in r.items()} for r in rows])
     return directory
+
+
+def write_scale_data(directory, n_findings):
+    os.makedirs(directory, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    today = now.date().isoformat()
+    n_assets = max(1, n_findings // 8)
+    cols = {s.label: list(dict.fromkeys(list(s.columns) + ["__date", "__hour"])) for s in TABLE_REGISTRY}
+    sev = ("LOW", "MEDIUM", "HIGH", "CRITICAL", "INFO")
+    with open(os.path.join(directory, "findings.csv"), "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=cols["findings"])
+        w.writeheader()
+        for i in range(n_findings):
+            opn = i % 5 != 0
+            w.writerow({
+                "silk_id": "nationwide____DedupedTask____%040x" % i, "finding_display_id": "SILK-%07d" % i,
+                "display_name": "SILK-%07d" % i, "severity": sev[i % 5],
+                "tool_severity": json.dumps({"rapid7_insight_vm-1": str(i % 5 + 1)}) if i % 3 else json.dumps({"tenable_io": sev[(i + 1) % 5].title()}),
+                "open": "true" if opn else "false", "is_ignored": "false", "has_ticket": "true" if i % 4 else "false",
+                "sla_date": _ts(now, 200 - i % 400), "first_seen": _ts(now, 400 - i % 300),
+                "last_seen": "" if i % 2 else _ts(now, i % 30), "closed_timestamp": "" if opn else _ts(now, i % 200),
+                "open_cves": json.dumps(["CVE-2026-%04d" % (j % 9999) for j in range(i % 4)]) if i % 4 else "",
+                "asset_silk_id": "nationwide____DedupedHostAsset____%040x" % (i % n_assets), "__date": today, "__hour": "5"})
+    with open(os.path.join(directory, "assets.csv"), "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=cols["assets"])
+        w.writeheader()
+        for i in range(n_assets):
+            w.writerow({
+                "silk_id": "nationwide____DedupedHostAsset____%040x" % i, "name": "" if i % 3 == 0 else "host-%06d" % i,
+                "asset_type": "host", "is_active": "true", "last_seen": _ts(now, i % 12), "open_findings_count": str(i % 40),
+                "hostnames": json.dumps(["lapp%06d" % i]), "mac_addresses": json.dumps([]), "__date": today, "__hour": "5"})
+    stale = os.path.join(directory, "tenable_assets.csv")
+    if os.path.exists(stale):
+        os.remove(stale)

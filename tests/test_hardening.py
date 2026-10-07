@@ -7,6 +7,7 @@ from unittest import mock
 import pytest
 import requests
 
+from helpers import flatten
 from vipr_drata import cli
 from vipr_drata.db.drata_client import DrataClient
 from vipr_drata.db.secrets import ConfigError, get_secret
@@ -120,8 +121,8 @@ def test_scale_keys_are_case_insensitive_and_empty_tool_defaults():
 def test_scanner_tool_env_blank_falls_back_to_tenable(monkeypatch, tmp_path):
     monkeypatch.setenv("SCANNER_TOOL", "")
     assert local(tmp_path) == 0
-    recs = {r["id"]: r for r in json.load(open(tmp_path / "o" / "records.json"))}
-    assert recs["finding:f-001"]["scannerSeverity"] == "high"
+    recs = flatten(json.load(open(tmp_path / "o" / "records.json")))["findings"]
+    assert recs["f-001"]["scannerSeverity"] == "high"
     assert local(tmp_path, "--scanner-tool", "   ") == 0
 
 
@@ -142,7 +143,7 @@ def test_profile_and_records_agree_on_empty_names():
         asset = {"silk_id": "a", "name": name, "hostnames": '["h1"]'}
         assert asset_name(asset) == "h1"
         tables = {"findings": [{"silk_id": "f", "asset_silk_id": "a"}], "assets": [asset]}
-        p = build_profile(tables, [{"finding": tables["findings"][0], "assets": [asset]}], [])
+        p = build_profile(tables, [{"finding": tables["findings"][0], "assets": [asset]}], [], [])
         assert p["raw_asset_resolution"] == {"name_from_hostname": 1}
 
 

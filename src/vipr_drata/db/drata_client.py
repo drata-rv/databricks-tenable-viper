@@ -64,47 +64,69 @@ class DrataClient:
         return min(v, MAX_RETRY_AFTER)
 
     def _post(self, url, body, force=False):
+        ok, err, _ = self._send(url, body, force)
+        return ok, err
+
+    def _send(self, url, body, force=False):
         errors = limits = 0
         max_errors = 1 if force else self.max_errors
         max_limits = 1 if force else self.max_rate_limits
         while True:
             if self._fatal == INTERRUPTED and not force:
-                return False, INTERRUPTED
+                return False, INTERRUPTED, None
             try:
                 resp = self._session().post(url, json=body, timeout=60)
             except PERMANENT as e:
                 self._fatal = "request rejected locally: %s" % type(e).__name__
-                return False, self._fatal
+                return False, self._fatal, None
             except requests.RequestException as e:
                 errors += 1
                 if errors > max_errors:
-                    return False, type(e).__name__
+                    return False, type(e).__name__, None
                 time.sleep(self.backoff * errors)
                 continue
             code = resp.status_code
             if code == 429:
                 limits += 1
                 if limits > max_limits:
-                    return False, "rate limited"
+                    return False, "rate limited", None
                 time.sleep(self._retry_after(resp, self.backoff * limits))
             elif code >= 500:
                 errors += 1
                 if errors > max_errors:
-                    return False, "HTTP %s" % code
+                    return False, "HTTP %s" % code, None
                 time.sleep(self.backoff * errors)
             elif code >= 400:
                 if code not in RECORD_ERRORS:
                     self._fatal = "HTTP %s: %s" % (code, resp.text[:200])
-                return False, "HTTP %s: %s" % (code, resp.text[:200])
+                return False, "HTTP %s: %s" % (code, resp.text[:200]), None
             else:
-                return True, None
+                return True, None, resp
+
+    @staticmethod
+    def _item_errors(resp, batch):
+        try:
+            data = resp.json()
+        except ValueError:
+            return []
+        if not isinstance(data, list):
+            return []
+        out = []
+        for rec, item in zip(batch, data):
+            status = item.get("statusCode") if isinstance(item, dict) else None
+            if status is not None and status not in (200, 201):
+                msg = ((item.get("error") or {}).get("message") if isinstance(item.get("error"), dict) else None) or ""
+                out.append({"id": rec.get("id"), "error": "item status %s: %s" % (status, str(msg)[:200])})
+        out += [{"id": rec.get("id"), "error": "no per-item result returned"} for rec in batch[len(data):]]
+        return out
 
     def _push_batch(self, url, batch):
         if self._fatal:
             return 0, [{"id": r.get("id"), "error": "not sent: " + self._fatal} for r in batch]
-        ok, err = self._post(url, {"data": batch})
+        ok, err, resp = self._send(url, {"data": batch})
         if ok:
-            return len(batch), []
+            bad = self._item_errors(resp, batch)
+            return len(batch) - len(bad), bad
         if len(batch) > 1 and not self._fatal and any(err.startswith("HTTP %d" % c) for c in RECORD_ERRORS):
             good, failed = 0, []
             for rec in batch:

@@ -86,9 +86,7 @@ def _asset_resolution(joined, assets):
     return dict(out), unmatched
 
 
-def build_profile(tables, joined, records):
-    findings = [r for r in records if r["recordType"] == "finding"]
-    assets = [r for r in records if r["recordType"] == "asset"]
+def build_profile(tables, joined, findings, assets):
     resolution, unmatched = _asset_resolution(joined, tables.get("assets", []))
     return {
         "note": "raw_* counts cover every pulled row, including rows later rejected",
@@ -100,7 +98,7 @@ def build_profile(tables, joined, records):
         "raw_asset_resolution": resolution,
         "unmatched_asset_id_samples": unmatched,
         "findings_null": {k: sum(1 for r in findings if r.get(k) is None)
-                          for k in ("scannerSeverity", "severityChanged", "firstSeen", "lastSeen", "slaDate",
+                          for k in ("scannerSeverity", "severityChanged", "firstSeen", "slaDate",
                                     "slaBreached", "assetName")},
         "tenable_match": dict(Counter(a["tenableMatch"] for a in assets)),
     }
