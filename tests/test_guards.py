@@ -275,3 +275,13 @@ def test_http_counts_are_recorded_per_response():
     c._sleep = lambda s: None
     c.upsert(1, 2, [{"id": "a"}])
     assert c.http_counts == {201: 1, 429: 1}
+
+
+def test_push_flags_old_per_finding_records_that_bury_the_new_ones(monkeypatch, tmp_path, capsys):
+    old = ["asset:nationwide____DedupedHostAsset____f0cc07", "finding:nationwide____DedupedTask____022a"]
+    assert _push_with_listing(monkeypatch, tmp_path, (old + ["summary"], 3)) == 0
+    err = capsys.readouterr().err
+    assert "old per-finding records (2+, e.g. asset:nationwide____DedupedHostAsset____f0cc07)" in err
+    assert "vipr-drata --push-mode session" in err
+    assert _push_with_listing(monkeypatch, tmp_path, (["summary"], 1)) == 0
+    assert "old per-finding records" not in capsys.readouterr().err

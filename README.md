@@ -17,6 +17,8 @@ Batch counts: `FINDING_LANE_BUCKETS` (default `{"critical":1,"high":2,"medium":4
 
 Default push mode is `session`: all records are staged, then atomically replace the dataset. Records not staged (old per-finding records, orphaned batches) are deleted. Any failure, including a failed `complete`, SIGINT or SIGTERM, cancels the session and leaves the previous data. Sessions of this tool older than 2 hours that were left `IN_PROGRESS` by a killed run are cancelled first; other sessions are never touched. The bundle sets `max_concurrent_runs: 1`. `--push-mode upsert` only updates and never deletes, so if batch counts shrink later the higher-numbered records keep stale items (use session mode).
 
+Migrating from the old one-record-per-finding design: run once with `--push-mode session` (upsert never deletes, so ~190k old `finding:*` / `asset:*` records would stay and bury the new ones; the push prints a note when it sees them).
+
 Reference run, 170k findings + 21k assets: 78 records, ~91 MB, largest record 1.6 MB, 28 requests (list, 26 stage, complete), ~12 s, ~0.6 GB memory (`--local --local-rows 170000`).
 Aborts (exit 2) before pushing if a record exceeds `MAX_RECORD_BYTES` (4 MB on the wire, max 4.5 MB; Drata limit 5 MB), if fewer than `MIN_FINDINGS`/`MIN_ASSETS` remain after the closed-finding lookback (an empty source would make every array test pass), or if rejected/total exceeds the reject ratio.
 

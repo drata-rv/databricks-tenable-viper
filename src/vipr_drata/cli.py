@@ -327,6 +327,10 @@ def _verify(dc, conn, res, records):
         ours = {r["id"] for r in records}
         seen = len(ours & set(ids))
         print("verify: Drata lists %d record(s) (total=%s); %d of our %d record ids are present" % (len(ids), total, seen, len(ours)))
+        legacy = [i for i in ids if i.startswith(("finding:", "asset:"))]
+        if legacy:
+            print("note: Drata still holds old per-finding records (%d+, e.g. %s). They bury the new records in the Manage tab; "
+                  "run once: vipr-drata --push-mode session" % (len(legacy), legacy[0][:60]), file=sys.stderr)
         if not seen:
             print("WARNING: none of the submitted records are visible in Drata. Check that DRATA_CONNECTION_ID and "
                   "DRATA_RESOURCE_ID are the connection you are viewing, and that DRATA_API_KEY belongs to the same "
