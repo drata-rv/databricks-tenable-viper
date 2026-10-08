@@ -92,7 +92,7 @@ def build_parser():
                    help="push to Drata prod tenant (separate credentials, no sandbox fallback)")
     p.add_argument("--push-mode", choices=["upsert", "session"], default=None,
                    help="session (default): stage everything, then atomically replace the dataset, removing any "
-                        "record not in this run | upsert: update only. Env: DRATA_PUSH_MODE")
+                        "record not in this run | upsert: update only, never deletes. Env: DRATA_PUSH_MODE")
     p.add_argument("--scanner-tool", default=os.getenv("SCANNER_TOOL") or "tenable",
                    help="substring of the tool_severity key compared with Vipr severity (default tenable)")
     p.add_argument("--scanner-severity-map", default=os.getenv("SCANNER_SEVERITY_MAP", ""),
@@ -247,7 +247,7 @@ def _main(argv):
         findings, scans, now=now, lane_buckets=lane_buckets, asset_buckets=args.asset_buckets,
         closed_lookback_days=args.closed_lookback_days, max_source_age_days=args.max_source_age_days,
         max_record_bytes=args.max_record_bytes, rejected=len(rejected), source_dates=source_dates,
-        grow_buckets=push_mode == "session")
+        grow_buckets=True)
 
     _dump(os.path.join(args.output_dir, "records.json"), records, indent=None)
     try:
@@ -286,6 +286,9 @@ def _main(argv):
         return 2
 
     print("Drata tenant: %s | push mode: %s" % ("PROD" if args.drata_prod else "sandbox", push_mode))
+    if push_mode == "upsert":
+        print("note: upsert never deletes; if batch counts shrink later, records with higher numbers keep old items "
+              "(session mode removes them)", file=sys.stderr)
     if args.local and push_mode == "session":
         print("WARNING: --local --push in session mode replaces the whole resource with synthetic data", file=sys.stderr)
     dc = DrataClient(_env_str("DRATA_API_BASE", "https://public-api.drata.com"),

@@ -24,16 +24,21 @@ def local(tmp_path, *extra, rows=0):
     return cli.main(argv + (["--local-rows", str(rows)] if rows else []))
 
 
-def test_cli_auto_grows_in_session_mode_and_is_exact_in_upsert_mode(tmp_path, capsys):
-    assert local(tmp_path, "--max-record-bytes", "150000", rows=20000) == 0
+@pytest.mark.parametrize("mode", ["session", "upsert"])
+def test_cli_sizes_its_own_batches_in_either_push_mode(tmp_path, capsys, mode):
+    assert local(tmp_path, "--max-record-bytes", "150000", "--push-mode", mode, rows=20000) == 0
     recs = json.load(open(tmp_path / "o" / "records.json"))
     lanes = {r["severityLane"]: r["bucketCount"] for r in recs if r["recordType"] == "findingBatch"}
     assert max(lanes.values()) > 4 and recs[0]["assetBuckets"] > 4
     assert max(size_of(r) for r in recs) < 150_000
     assert "batches: critical=" in capsys.readouterr().out
-    assert local(tmp_path, "--max-record-bytes", "150000", "--push-mode", "upsert", rows=20000) == 2
-    err = capsys.readouterr().err
-    assert "raise FINDING_LANE_BUCKETS[" in err or "raise ASSET_BUCKETS" in err
+
+
+def test_an_old_env_with_upsert_and_default_sizes_no_longer_aborts_on_real_volume(monkeypatch, tmp_path):
+    monkeypatch.setenv("DRATA_PUSH_MODE", "upsert")
+    assert local(tmp_path, rows=60000) == 0
+    recs = json.load(open(tmp_path / "o" / "records.json"))
+    assert max(size_of(r) for r in recs) < 2_500_000 and recs[0]["findingCount"] > 40000
 
 
 def test_grow_mode_message_does_not_suggest_an_impossible_bucket_count():
