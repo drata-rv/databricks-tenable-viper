@@ -17,7 +17,7 @@ INTERRUPTED = "interrupted"
 MAX_RETRY_AFTER = 120.0
 WRAPPER_KEYS = ("data", "results", "items", "records")
 SESSION_PREFIX = "vipr-"
-STALE_SESSION_AFTER = timedelta(hours=2)
+STALE_SESSION_AFTER = timedelta(minutes=15)
 
 
 # compact JSON: the size guard in batching.py measures these same bytes
@@ -269,9 +269,7 @@ class DrataClient:
             return None
         return now - started
 
-    def _stale_sessions(self, base, own_id, now=None):
-        now = now or datetime.now(timezone.utc)
-        # only this tool's own sessions, older than 2 h: never cancel another writer's session
+    def _open_sessions(self, base):
         data = self._get(base + "/sessions?status=IN_PROGRESS")
         if isinstance(data, dict):
             data = next((data[k] for k in WRAPPER_KEYS if isinstance(data.get(k), list)), [])
@@ -279,17 +277,38 @@ class DrataClient:
             return None
         if not isinstance(data, list):
             return []
-        stale = []
+        ids = []
         for item in data:
             if isinstance(item, dict) and item.get("status") not in (None, "IN_PROGRESS"):
                 continue
             sid = str((item.get("sessionId") or item.get("id")) if isinstance(item, dict) else item or "")
+            if sid:
+                ids.append(sid)
+        return ids
+
+    def _stale_sessions(self, base, own_id, now=None):
+        now = now or datetime.now(timezone.utc)
+        open_ = self._open_sessions(base)
+        if open_ is None:
+            return None
+        stale = []
+        for sid in open_:
             age = self._session_age(sid, now) if sid.startswith(SESSION_PREFIX) else None
-            if sid and sid != own_id and age is not None and age > STALE_SESSION_AFTER:
+            if sid != own_id and age is not None and age > STALE_SESSION_AFTER:
                 stale.append(sid)
         return stale
 
-    def replace_via_session(self, connection_id, resource_id, records, session_id):
+    def _clear_blockers(self, base, own_id, cancel_foreign):
+        open_ = [s for s in (self._open_sessions(base) or []) if s != own_id]
+        mine = [s for s in open_ if s.startswith(SESSION_PREFIX)]
+        foreign = [s for s in open_ if not s.startswith(SESSION_PREFIX)]
+        progress.log("Drata says another session is open: %s", ", ".join(open_) or "(not listed by the API)")
+        for sid in mine + (foreign if cancel_foreign else []):
+            progress.log("cancelling blocking session %s", sid)
+            self._post(base + "/sessions/%s/actions" % sid, {"action": "cancel"}, force=True)
+        return open_, mine + (foreign if cancel_foreign else [])
+
+    def replace_via_session(self, connection_id, resource_id, records, session_id, cancel_foreign=False):
         if not records:
             return 0, [{"id": None, "error": "empty snapshot: refusing session replace"}], "skipped"
         base = self._base(connection_id, resource_id)
@@ -301,10 +320,20 @@ class DrataClient:
             progress.log("session %s: looking for stale in-progress sessions", session_id)
             stale = self._stale_sessions(base, session_id)
             for sid in stale or []:
-                progress.log("cancelling stale session %s (older than 2 h)", sid)
+                progress.log("cancelling stale session %s (older than 15 min)", sid)
                 self._post(base + "/sessions/%s/actions" % sid, {"action": "cancel"}, force=True)
             progress.log("session %s: staging 1 probe record to check Drata attaches it to the session", session_id)
             ok, failed = self._push_all(stage, records[:1], "probe record")
+            if failed and any("already in progress" in f["error"] for f in failed):
+                open_, cancelled = self._clear_blockers(base, session_id, cancel_foreign)
+                if cancelled:
+                    ok, failed = self._push_all(stage, records[:1], "probe record (retry)")
+                if failed and any("already in progress" in f["error"] for f in failed):
+                    finished = True
+                    left = [s for s in open_ if s not in cancelled]
+                    return 0, [{"id": None, "error": "another session is open on this connection%s and was not cancelled; "
+                                                     "cancel it in Drata or rerun with --cancel-open-sessions"
+                                                     % (" (%s)" % ", ".join(left) if left else ", not listed by the API")}], "unusable"
             seen = self.session_record_count(base, session_id) if not failed else None
             progress.log("probe: Drata reports %s staged record(s) in the session", "an unknown number of" if seen is None else seen)
             if not failed and seen == 0:
@@ -321,7 +350,7 @@ class DrataClient:
             progress.log("session %s: %s", session_id, "completing (atomic replace of the dataset)" if action == "complete" else "cancelling because staging had failures")
             done, err = self._post(actions, {"action": action})
             finished = done
-            if not done:
+            if not done and not (action == "cancel" and err and "HTTP 404" in err):
                 failed.append({"id": None, "error": "session %s failed: %s" % (action, err)})
                 if action == "complete":
                     progress.log("complete failed (%s); cancelling the session", err)

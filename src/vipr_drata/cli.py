@@ -129,6 +129,8 @@ def build_parser():
                    help="with --local: also push the SYNTHETIC data (in session mode it replaces the whole resource)")
     p.add_argument("--dry-run", action="store_true", help="extract+transform only, no push")
     p.add_argument("--quiet", action="store_true", help="only print results, not step-by-step progress")
+    p.add_argument("--cancel-open-sessions", action="store_true",
+                   help="if an in-progress Drata session not created by this tool blocks session mode, cancel it too")
     p.add_argument("--env", action="append", metavar="KEY=VALUE", help="set an environment variable (job parameters)")
     return p
 
@@ -312,11 +314,10 @@ def _main(argv):
     conn, res = os.environ["DRATA_CONNECTION_ID"], os.environ["DRATA_RESOURCE_ID"]
     if push_mode == "session":
         progress.log("starting session replace %s", session_id)
-        ok, failed, action = dc.replace_via_session(conn, res, records, session_id)
+        ok, failed, action = dc.replace_via_session(conn, res, records, session_id, cancel_foreign=args.cancel_open_sessions)
         if action == "unusable":
-            print("WARNING: Drata did not attach staged records to the session on this tenant (%s); falling back to upsert. "
-                  "Old records are NOT removed; to start clean, create a new custom connection." % failed[-1]["error"],
-                  file=sys.stderr)
+            print("WARNING: session replace is not usable here (%s); falling back to upsert. Old records are NOT removed; "
+                  "to start clean, create a new custom connection." % failed[-1]["error"], file=sys.stderr)
             progress.log("falling back to upsert")
             ok, failed = dc.upsert(conn, res, records)
             action = "upsert fallback"

@@ -496,3 +496,32 @@ def test_session_record_count_reads_lists_totals_and_wrappers():
         sess.get.return_value = _resp(200, body)
         assert c.session_record_count("http://x/base", "s") == expected
     assert "records?sessionId=s&limit=100" in sess.get.call_args.args[0]
+
+
+BLOCKED = '{"statusCode":400,"message":"Another session upload is already in progress for this connection/resource.","code":28022}'
+
+
+def _blocked_client(open_sessions):
+    sess = mock.Mock()
+    sess.get.side_effect = _router(_resp(200, [{"sessionId": s} for s in open_sessions]))
+    sess.post.side_effect = [mock.Mock(status_code=400, headers={}, text=BLOCKED)] + [_resp(200, None)] * 6
+    return sess
+
+
+def test_a_blocking_session_of_this_tool_is_cancelled_and_the_probe_retried():
+    mine = _sid(timedelta(minutes=2))
+    sess = _blocked_client([mine])
+    ok, failed, action = _client(sess).replace_via_session(1, 2, [{"id": "a"}], "new")
+    assert action == "complete" and not failed
+    posted = _posted(sess)
+    assert ("%s/actions" % mine, {"action": "cancel"}) in posted and ("new/actions", {"action": "cancel"}) not in posted
+
+
+@pytest.mark.parametrize("cancel_foreign,action,cancelled", [(False, "unusable", False), (True, "complete", True)])
+def test_a_foreign_blocking_session_is_only_cancelled_when_allowed(cancel_foreign, action, cancelled):
+    sess = _blocked_client(["created-in-the-ui"])
+    ok, failed, got = _client(sess).replace_via_session(1, 2, [{"id": "a"}], "new", cancel_foreign=cancel_foreign)
+    assert got == action
+    assert (("created-in-the-ui/actions", {"action": "cancel"}) in _posted(sess)) is cancelled
+    assert cancelled or "created-in-the-ui" in failed[0]["error"] and "--cancel-open-sessions" in failed[0]["error"]
+    assert ("new/actions", {"action": "cancel"}) not in _posted(sess)
