@@ -126,6 +126,7 @@ def test_rejected_items_do_not_block_the_session_replace(monkeypatch, tmp_path):
     bad = FINDINGS + [dict(FINDINGS[0], silk_id="")]
     with mock.patch.object(cli, "get_client_for_env"), \
             mock.patch("vipr_drata.etl.extract.run_sql", lambda c, w, sql: bad if "FROM c.s.t_vipr_all_findings" in sql else ASSETS), \
+            mock.patch.object(cli.DrataClient, "list_records", return_value=None), \
             mock.patch.object(cli.DrataClient, "replace_via_session", return_value=(18, [], "complete")) as sess:
         assert cli.main(args + ["--max-reject-ratio", "0.9"]) == 0
     (call,) = sess.call_args_list

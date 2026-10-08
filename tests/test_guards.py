@@ -198,3 +198,80 @@ def test_a_failed_complete_is_reported_as_failed_not_as_complete(monkeypatch, tm
         DC.return_value.unverified = 0
         assert local(tmp_path, "--push") == 1
     assert "-> complete FAILED" in capsys.readouterr().out and (tmp_path / "o" / "_failed.json").exists()
+
+
+def _listing_client(pages):
+    from vipr_drata.db.drata_client import DrataClient
+    sess = mock.Mock()
+    responses = [mock.Mock(status_code=200, json=lambda p=p: p) for p in pages]
+    sess.get.side_effect = responses
+    c = DrataClient("http://x", "k", backoff=0, workers=1)
+    c._build_session = lambda: sess
+    return c, sess
+
+
+def test_list_records_reads_plain_lists_wrapped_pages_and_totals():
+    c, sess = _listing_client([[{"id": "a"}, {"id": "b"}]])
+    assert c.list_records(1, 2) == (["a", "b"], None)
+    assert "limit=100&page=1" in sess.get.call_args.args[0]
+    c, _ = _listing_client([{"data": [{"id": "a"}, {"data": {"id": "b"}}], "total": 2}])
+    assert c.list_records(1, 2) == (["a", "b"], 2)
+    page = [{"id": str(i)} for i in range(100)]
+    c, sess = _listing_client([{"results": page, "count": 150}, {"results": [{"id": "x"}], "count": 150}])
+    ids, total = c.list_records(1, 2)
+    assert len(ids) == 101 and total == 150 and sess.get.call_count == 2
+
+
+@pytest.mark.parametrize("body", ["junk", {"nope": 1}, None])
+def test_list_records_returns_none_for_unrecognised_bodies(body):
+    c, _ = _listing_client([body])
+    assert c.list_records(1, 2) is None
+
+
+def _push_with_listing(monkeypatch, tmp_path, listing):
+    monkeypatch.setenv("DRATA_CONNECTION_ID", "27")
+    monkeypatch.setenv("DRATA_RESOURCE_ID", "2")
+    monkeypatch.setenv("DRATA_API_KEY", "k")
+    with mock.patch.object(cli, "DrataClient") as DC:
+        client = DC.return_value
+        client.replace_via_session.return_value = (18, [], "complete")
+        client.unverified = 0
+        client.http_counts = {200: 1, 201: 2}
+        client.list_records.side_effect = listing if isinstance(listing, Exception) else None
+        if not isinstance(listing, Exception):
+            client.list_records.return_value = listing
+        return local(tmp_path, "--push")
+
+
+def test_push_prints_the_target_http_counts_and_confirms_records_landed(monkeypatch, tmp_path, capsys):
+    recs_ids = []
+    assert _push_with_listing(monkeypatch, tmp_path, (["summary", "assets-000", "other"], 3)) == 0
+    out = capsys.readouterr()
+    assert "target: https://public-api.drata.com connection=27 resource=2" in out.out or "invalid.test" in out.out
+    assert "connection=27 resource=2" in out.out and "drata http responses: {200: 1, 201: 2}" in out.out
+    assert "verify: Drata lists 3 record(s) (total=3); 2 of our 18 record ids are present" in out.out
+    assert "WARNING: none of the submitted" not in out.err
+
+
+def test_push_warns_loudly_when_none_of_our_records_are_visible(monkeypatch, tmp_path, capsys):
+    assert _push_with_listing(monkeypatch, tmp_path, ([], 0)) == 0
+    err = capsys.readouterr().err
+    assert "none of the submitted records are visible in Drata" in err and "DRATA_CONNECTION_ID" in err
+
+
+def test_push_survives_an_unreadable_or_failing_readback(monkeypatch, tmp_path, capsys):
+    assert _push_with_listing(monkeypatch, tmp_path, None) == 0
+    assert "could not read the records back from Drata" in capsys.readouterr().err
+    assert _push_with_listing(monkeypatch, tmp_path, RuntimeError("boom")) == 0
+    assert "verify skipped: RuntimeError" in capsys.readouterr().err
+
+
+def test_http_counts_are_recorded_per_response():
+    from vipr_drata.db.drata_client import DrataClient
+    sess = mock.Mock()
+    sess.post.side_effect = [mock.Mock(status_code=429, headers={}, text=""), mock.Mock(status_code=201, headers={}, text="")]
+    c = DrataClient("http://x", "k", backoff=0, workers=1)
+    c._build_session = lambda: sess
+    c._sleep = lambda s: None
+    c.upsert(1, 2, [{"id": "a"}])
+    assert c.http_counts == {201: 1, 429: 1}

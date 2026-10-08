@@ -285,13 +285,16 @@ def _main(argv):
               (100.0 * len(rejected) / total, 100.0 * args.max_reject_ratio), file=sys.stderr)
         return 2
 
-    print("Drata tenant: %s | push mode: %s" % ("PROD" if args.drata_prod else "sandbox", push_mode))
+    base_url = _env_str("DRATA_API_BASE", "https://public-api.drata.com")
+    print("Drata tenant: %s | push mode: %s | target: %s connection=%s resource=%s" % (
+        "PROD" if args.drata_prod else "sandbox", push_mode, base_url, os.environ["DRATA_CONNECTION_ID"],
+        os.environ["DRATA_RESOURCE_ID"]))
     if push_mode == "upsert":
         print("note: upsert never deletes; if batch counts shrink later, records with higher numbers keep old items "
               "(session mode removes them)", file=sys.stderr)
     if args.local and push_mode == "session":
         print("WARNING: --local --push in session mode replaces the whole resource with synthetic data", file=sys.stderr)
-    dc = DrataClient(_env_str("DRATA_API_BASE", "https://public-api.drata.com"),
+    dc = DrataClient(base_url,
                      drata_api_key(args.drata_prod, args.workspace))
     session_id = "vipr-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     conn, res = os.environ["DRATA_CONNECTION_ID"], os.environ["DRATA_RESOURCE_ID"]
@@ -302,6 +305,9 @@ def _main(argv):
     else:
         ok, failed = dc.upsert(conn, res, records)
         print("upsert pushed=%d failed=%d" % (ok, len(failed)))
+    print("drata http responses: %s" % (dc.http_counts,))
+    if not failed:
+        _verify(dc, conn, res, records)
     if dc.unverified:
         print("warning: %d bulk response(s) carried no per-item results; failures inside them would be invisible"
               % dc.unverified, file=sys.stderr)
@@ -309,6 +315,24 @@ def _main(argv):
         _dump(os.path.join(args.output_dir, "_failed.json"), failed)
         print("failures (first 5): %s" % failed[:5], file=sys.stderr)
     return 1 if failed else 0
+
+
+def _verify(dc, conn, res, records):
+    try:
+        listed = dc.list_records(conn, res)
+        if listed is None:
+            print("verify: could not read the records back from Drata (the key may lack read scope)", file=sys.stderr)
+            return
+        ids, total = listed
+        ours = {r["id"] for r in records}
+        seen = len(ours & set(ids))
+        print("verify: Drata lists %d record(s) (total=%s); %d of our %d record ids are present" % (len(ids), total, seen, len(ours)))
+        if not seen:
+            print("WARNING: none of the submitted records are visible in Drata. Check that DRATA_CONNECTION_ID and "
+                  "DRATA_RESOURCE_ID are the connection you are viewing, and that DRATA_API_KEY belongs to the same "
+                  "Drata workspace.", file=sys.stderr)
+    except Exception as e:
+        print("verify skipped: %s" % type(e).__name__, file=sys.stderr)
 
 
 def run():

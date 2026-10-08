@@ -49,11 +49,19 @@ class DrataClient:
         self._local = threading.local()
         self._fatal = None
         self._unverified = []
+        self._codes = []
         self._stop = threading.Event()
 
     @property
     def unverified(self):
         return len(self._unverified)
+
+    @property
+    def http_counts(self):
+        counts = {}
+        for code in list(self._codes):
+            counts[code] = counts.get(code, 0) + 1
+        return dict(sorted(counts.items()))
 
     def _build_session(self):
         s = requests.Session()
@@ -105,6 +113,7 @@ class DrataClient:
                 self._sleep(self.backoff * errors)
                 continue
             code = resp.status_code
+            self._codes.append(code)
             if code == 429:
                 limits += 1
                 if limits > max_limits:
@@ -181,6 +190,21 @@ class DrataClient:
             raise
         ex.shutdown()
         return ok, failed
+
+    def list_records(self, connection_id, resource_id, limit=100, pages=5):
+        url = self._base(connection_id, resource_id) + "/records"
+        found, total = [], None
+        for page in range(1, pages + 1):
+            data = self._get("%s?limit=%d&page=%d" % (url, limit, page))
+            if isinstance(data, dict):
+                total = next((data[k] for k in ("total", "totalCount", "count") if isinstance(data.get(k), int)), total)
+                data = next((data[k] for k in WRAPPER_KEYS if isinstance(data.get(k), list)), None)
+            if not isinstance(data, list):
+                return (found, total) if found else None
+            found += [str(i.get("id") or (i.get("data") or {}).get("id")) for i in data if isinstance(i, dict)]
+            if len(data) < limit:
+                break
+        return found, total
 
     def upsert(self, connection_id, resource_id, records):
         return self._push_all(self._base(connection_id, resource_id) + "/records", records)
