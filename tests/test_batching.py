@@ -129,8 +129,8 @@ def test_size_guard_names_the_setting_and_a_workable_value():
     with pytest.raises(ConfigError) as e:
         build(findings, [], lane_buckets=dict(SMALL, low=1), max_record_bytes=500_000)
     msg = str(e.value)
-    assert "FINDING_LANE_BUCKETS[low]" in msg and "raise" in msg
-    needed = int(msg.rsplit("at least ", 1)[1])
+    assert "FINDING_LANE_BUCKETS[low]" in msg and "raise" in msg and "DRATA_PUSH_MODE=session" in msg
+    needed = int(msg.split("at least ", 1)[1].split(",", 1)[0])
     recs = build(findings, [], lane_buckets=dict(SMALL, low=needed), max_record_bytes=500_000)
     assert max(size_of(r) for r in recs) <= 500_000
     with pytest.raises(ConfigError, match="ASSET_BUCKETS"):
