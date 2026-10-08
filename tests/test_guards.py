@@ -145,7 +145,7 @@ def test_outputs_from_a_previous_run_are_removed_before_an_abort(monkeypatch, tm
     ("DATABRICKS_WORKSPACE", " ", lambda a: a.workspace == "test"),
     ("DRATA_PROD", "", lambda a: a.drata_prod is False),
     ("DRATA_API_BASE", "", lambda a: cli._env_str("DRATA_API_BASE", "https://public-api.drata.com") == "https://public-api.drata.com"),
-    ("DRATA_PUSH_MODE", "  ", lambda a: cli._env_str("DRATA_PUSH_MODE", "session") == "session")])
+    ("DRATA_PUSH_MODE", "  ", lambda a: cli._env_str("DRATA_PUSH_MODE", "upsert") == "upsert")])
 def test_blank_env_values_mean_the_default(monkeypatch, name, value, check):
     monkeypatch.setenv(name, value)
     assert check(cli.build_parser().parse_args([]))
@@ -282,7 +282,7 @@ def test_push_flags_old_per_finding_records_that_bury_the_new_ones(monkeypatch, 
     assert _push_with_listing(monkeypatch, tmp_path, (old + ["summary"], 3)) == 0
     err = capsys.readouterr().err
     assert "old per-finding records (2+, e.g. asset:nationwide____DedupedHostAsset____f0cc07)" in err
-    assert "vipr-drata --push-mode session" in err
+    assert "NEW custom connection" in err
     assert _push_with_listing(monkeypatch, tmp_path, (["summary"], 1)) == 0
     assert "old per-finding records" not in capsys.readouterr().err
 

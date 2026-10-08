@@ -191,6 +191,6 @@ def build_records(findings, assets, *, now, lane_buckets=None, asset_buckets=DEF
                                   % (r["id"], size / 1e6, max_record_bytes / 1e6, MAX_RECORD_BYTES_LIMIT))
             need = min(math.ceil(current * size / (max_record_bytes * 0.6)), MAX_BUCKETS)
             raise ConfigError("record %s is %.1f MB (limit %.1f MB): raise %s from %d to at least %d, or use "
-                              "session push mode (DRATA_PUSH_MODE=session, the default), which sizes batches automatically"
+                              "DRATA_PUSH_MODE=session, which sizes batches automatically"
                               % (r["id"], size / 1e6, max_record_bytes / 1e6, target, current, need))
     return records

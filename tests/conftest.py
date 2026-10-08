@@ -13,3 +13,4 @@ def hermetic_env(monkeypatch):
                          "SCANNER_")):
             monkeypatch.delenv(k)
     monkeypatch.setenv("DRATA_API_BASE", "http://invalid.test")
+    monkeypatch.setenv("DRATA_PUSH_MODE", "session")

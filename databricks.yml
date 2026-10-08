@@ -19,7 +19,7 @@ variables:
   resource_id:
     default: ""
   push_mode:
-    default: session
+    default: upsert
   finding_lane_buckets:
     default: ""
   asset_buckets:

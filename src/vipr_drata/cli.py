@@ -92,8 +92,8 @@ def build_parser():
     p.add_argument("--drata-prod", action="store_true", default=_env_bool("DRATA_PROD"),
                    help="push to Drata prod tenant (separate credentials, no sandbox fallback)")
     p.add_argument("--push-mode", choices=["upsert", "session"], default=None,
-                   help="session (default): stage everything, then atomically replace the dataset, removing any "
-                        "record not in this run | upsert: update only, never deletes. Env: DRATA_PUSH_MODE")
+                   help="upsert (default): update only, never deletes | session: stage everything, then atomically replace "
+                        "the dataset, removing any record not in this run. Env: DRATA_PUSH_MODE")
     p.add_argument("--scanner-tool", default=os.getenv("SCANNER_TOOL") or "tenable",
                    help="substring of the tool_severity key compared with Vipr severity (default tenable)")
     p.add_argument("--scanner-severity-map", default=os.getenv("SCANNER_SEVERITY_MAP", ""),
@@ -177,7 +177,7 @@ def _main(argv):
 
     if args.max_reject_ratio is None:
         args.max_reject_ratio = 1.0 if args.local else 0.05
-    push_mode = args.push_mode or _env_str("DRATA_PUSH_MODE", "session")
+    push_mode = args.push_mode or _env_str("DRATA_PUSH_MODE", "upsert")
     if push_mode not in ("upsert", "session"):
         p.error("invalid push mode %r (DRATA_PUSH_MODE): use upsert or session" % push_mode)
     lane_buckets = parse_lane_buckets(args.finding_lane_buckets)
@@ -353,7 +353,8 @@ def _verify(dc, conn, res, records):
         legacy = [i for i in ids if i.startswith(("finding:", "asset:"))]
         if legacy:
             print("note: Drata still holds old per-finding records (%d+, e.g. %s). They bury the new records in the Manage tab; "
-                  "run once: vipr-drata --push-mode session" % (len(legacy), legacy[0][:60]), file=sys.stderr)
+                  "point DRATA_CONNECTION_ID / DRATA_RESOURCE_ID at a NEW custom connection created from "
+                  "schemas/vipr_unified.schema.json" % (len(legacy), legacy[0][:60]), file=sys.stderr)
         if not seen and total is not None and total > len(ids):
             print("note: checked only the first %d of %d records Drata holds, so this cannot confirm ours landed; open the "
                   "connection's Manage tab and search for 'summary'" % (len(ids), total), file=sys.stderr)
