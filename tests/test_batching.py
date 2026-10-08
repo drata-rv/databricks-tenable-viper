@@ -354,6 +354,14 @@ def _sid(delta):
     return "vipr-" + (datetime.now(timezone.utc) - delta).strftime("%Y%m%dT%H%M%S")
 
 
+def _router(listing, staged=1):
+    def get(url, timeout):
+        if "records?sessionId" in url:
+            return _resp(200, [{"id": "r_%d" % i} for i in range(staged)]) if staged is not None else _resp(500)
+        return listing() if isinstance(listing, type(lambda: 0)) else listing
+    return get
+
+
 def _posted(sess):
     return [(c.args[0].rsplit("/sessions/", 1)[1] if "/sessions/" in c.args[0] else "records", sent(c))
             for c in sess.post.call_args_list]
@@ -362,13 +370,13 @@ def _posted(sess):
 def test_only_old_sessions_of_this_tool_are_cancelled_before_staging():
     old, recent = _sid(timedelta(days=1)), _sid(timedelta(minutes=10))
     sess = mock.Mock()
-    sess.get.return_value = _resp(200, [{"sessionId": old}, {"id": recent}, {"sessionId": "someone-else"},
-                                         {"sessionId": "vipr-garbage"}, {"sessionId": "mine", "status": "IN_PROGRESS"},
-                                         {"sessionId": _sid(timedelta(days=3)), "status": "ACTIVE"}])
+    sess.get.side_effect = _router(_resp(200, [{"sessionId": old}, {"id": recent}, {"sessionId": "someone-else"},
+                                                {"sessionId": "vipr-garbage"}, {"sessionId": "mine", "status": "IN_PROGRESS"},
+                                                {"sessionId": _sid(timedelta(days=3)), "status": "ACTIVE"}]))
     sess.post.return_value = _resp(200, None)
     ok, failed, action = _client(sess).replace_via_session(1, 2, [{"id": "a"}], "mine")
     posted = _posted(sess)
-    assert action == "complete" and sess.get.call_args.args[0].endswith("/sessions?status=IN_PROGRESS")
+    assert action == "complete" and sess.get.call_args_list[0].args[0].endswith("/sessions?status=IN_PROGRESS")
     assert posted[0] == ("%s/actions" % old, {"action": "cancel"})
     cancelled = [p for p, body in posted if body == {"action": "cancel"}]
     assert cancelled == ["%s/actions" % old]
@@ -376,13 +384,15 @@ def test_only_old_sessions_of_this_tool_are_cancelled_before_staging():
 
 
 def test_listing_is_retried_and_failures_never_block_the_push():
+    answers = iter([_resp(429), _resp(500), _resp(200, [])])
     sess = mock.Mock()
-    sess.get.side_effect = [_resp(429), _resp(500), _resp(200, [])]
+    sess.get.side_effect = _router(lambda: next(answers))
     sess.post.return_value = _resp(200, None)
-    assert _client(sess).replace_via_session(1, 2, [{"id": "a"}], "s")[2] == "complete" and sess.get.call_count == 3
+    assert _client(sess).replace_via_session(1, 2, [{"id": "a"}], "s")[2] == "complete"
+    assert sum(1 for c in sess.get.call_args_list if "status=IN_PROGRESS" in c.args[0]) == 3
     for listing in (_resp(500), _resp(200, "junk"), _resp(200, {"nope": 1}), _resp(404)):
         sess = mock.Mock()
-        sess.get.return_value = listing
+        sess.get.side_effect = _router(listing)
         sess.post.return_value = _resp(200, None)
         assert _client(sess, max_errors=1, max_rate_limits=1).replace_via_session(1, 2, [{"id": "a"}], "s")[2] == "complete"
     sess = mock.Mock()
@@ -407,13 +417,13 @@ def test_a_failed_complete_cancels_its_own_session_and_explains_when_listing_fai
 
 def test_interrupt_during_the_final_action_still_cancels_but_never_after_a_successful_complete():
     sess = mock.Mock()
-    sess.get.return_value = _resp(200, [])
+    sess.get.side_effect = _router(_resp(200, []))
     sess.post.side_effect = [_resp(200), KeyboardInterrupt, _resp(200)]
     with pytest.raises(KeyboardInterrupt):
         _client(sess).replace_via_session(1, 2, [{"id": "a"}], "s")
     assert [b for _, b in _posted(sess)][-1] == {"action": "cancel"}
     sess = mock.Mock()
-    sess.get.return_value = _resp(200, [])
+    sess.get.side_effect = _router(_resp(200, []))
     sess.post.return_value = _resp(200, None)
     assert _client(sess).replace_via_session(1, 2, [{"id": "a"}], "s")[2] == "complete"
     assert [b for _, b in _posted(sess)].count({"action": "cancel"}) == 0
@@ -446,3 +456,43 @@ def test_in_flight_workers_stop_retrying_once_any_worker_gives_up():
     assert c._send("http://x/y", {"data": []}) == (False, "rate limited: retries exhausted", None)
     assert sess.post.call_count == 0
     assert c._send("http://x/y", {"action": "cancel"}, force=True)[0] is True and sess.post.call_count == 1
+
+
+def test_probe_that_finds_nothing_staged_stops_before_uploading_everything():
+    sess = mock.Mock()
+    sess.get.side_effect = _router(_resp(200, []), staged=0)
+    sess.post.return_value = _resp(200, None)
+    recs = [{"id": "r%d" % i} for i in range(5)]
+    ok, failed, action = _client(sess).replace_via_session(1, 2, recs, "mine")
+    assert action == "unusable" and failed[0]["error"].startswith("Drata accepted the staged record but lists none")
+    data_posts = [b for _, b in _posted(sess) if "data" in b]
+    assert len(data_posts) == 1 and data_posts[0] == {"data": [{"id": "r0"}]}
+    assert _posted(sess)[-1][1] == {"action": "cancel"}
+
+
+def test_complete_422_no_data_records_cancels_and_reports_unusable():
+    sess = mock.Mock()
+    sess.get.side_effect = _router(_resp(200, []), staged=None)
+    msg = '{"statusCode":422,"message":"Cannot complete a session with no data records","code":10000}'
+    bad = mock.Mock(status_code=422, headers={}, text=msg)
+    sess.post.side_effect = [_resp(200), _resp(200), bad, _resp(200)]
+    ok, failed, action = _client(sess).replace_via_session(1, 2, [{"id": "a"}, {"id": "b"}], "mine")
+    assert action == "unusable" and "no data records" in failed[0]["error"]
+    assert _posted(sess)[-1][1] == {"action": "cancel"}
+
+
+def test_unreadable_staged_listing_does_not_block_a_working_session():
+    sess = mock.Mock()
+    sess.get.side_effect = _router(_resp(200, []), staged=None)
+    sess.post.return_value = _resp(200, None)
+    assert _client(sess).replace_via_session(1, 2, [{"id": "a"}, {"id": "b"}], "mine")[2] == "complete"
+
+
+def test_session_record_count_reads_lists_totals_and_wrappers():
+    sess = mock.Mock()
+    c = _client(sess)
+    for body, expected in (([{"id": 1}, {"id": 2}], 2), ({"data": [{"id": 1}], "total": 7}, 7), ({"results": [{"id": 1}]}, 1),
+                           ({"total": 4}, 4), ("junk", None), ({"nope": 1}, None)):
+        sess.get.return_value = _resp(200, body)
+        assert c.session_record_count("http://x/base", "s") == expected
+    assert "records?sessionId=s&limit=100" in sess.get.call_args.args[0]

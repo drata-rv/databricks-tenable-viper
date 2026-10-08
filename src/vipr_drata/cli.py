@@ -14,6 +14,7 @@ from .etl.local import load_local_tables
 from .batching import (DEFAULT_ASSET_BUCKETS, MAX_BUCKETS, MAX_RECORD_BYTES_LIMIT, batch_time, build_records,
                        parse_lane_buckets, size_of)
 from .etl.sample_data import write_scale_data, write_sample_data
+from . import __version__, progress
 from .profile import build_profile, summary
 from .transform import SEVERITY_ORDER, build_payloads
 
@@ -127,6 +128,7 @@ def build_parser():
     p.add_argument("--push", action="store_true",
                    help="with --local: also push the SYNTHETIC data (in session mode it replaces the whole resource)")
     p.add_argument("--dry-run", action="store_true", help="extract+transform only, no push")
+    p.add_argument("--quiet", action="store_true", help="only print results, not step-by-step progress")
     p.add_argument("--env", action="append", metavar="KEY=VALUE", help="set an environment variable (job parameters)")
     return p
 
@@ -169,6 +171,7 @@ def _main(argv):
     if bad:
         p.error("malformed --env (need KEY=VALUE): " + ", ".join(bad))
     args = p.parse_args(argv)
+    progress.start(quiet=args.quiet)
 
     if args.max_reject_ratio is None:
         args.max_reject_ratio = 1.0 if args.local else 0.05
@@ -213,6 +216,9 @@ def _main(argv):
         if unset:
             raise ConfigError("missing source table setting(s): " + ", ".join(unset))
     args.scanner_tool = (args.scanner_tool or "").strip() or "tenable"
+    progress.log("vipr-drata %s | source: %s | push: %s | scanner tool: %s",
+                 __version__, "local files" if args.local else "Databricks workspace '%s' warehouse %s" % (args.workspace, args.warehouse_id),
+                 "none (dry run)" if args.dry_run else push_mode, args.scanner_tool)
     for stale in ("_failed.json", "partial.json", "records.json", "_profile.json", "_rejected.json"):
         if os.path.exists(os.path.join(args.output_dir, stale)):
             os.remove(os.path.join(args.output_dir, stale))
@@ -227,18 +233,23 @@ def _main(argv):
             print("LOCAL MODE: generated synthetic sample tables in %s" % args.local_data)
         tables = load_local_tables(args.local_data)
         print("LOCAL MODE: tables from %s (no Databricks)" % args.local_data)
+        progress.log("loaded %s", ", ".join("%s=%d rows" % (k, len(v)) for k, v in tables.items()))
     else:
         try:
+            progress.log("connecting to Databricks workspace '%s'", args.workspace)
             tables = extract_all(get_client_for_env(args.workspace), args.warehouse_id)
+            progress.log("extracted %s", ", ".join("%s=%d rows" % (k, len(v)) for k, v in tables.items()))
         except ConfigError:
             raise
         except Exception as e:
             print("error: Databricks extraction failed: %s: %s" % (type(e).__name__, str(e)[:300]), file=sys.stderr)
             return 1
+    progress.log("joining findings to assets and deriving SLA / ticket / severity signals")
     joined, assets = merge(tables)
     findings, scans, rejected = build_payloads(joined, assets, args.stale_days,
                                                tenable_assets=tables.get("tenable_assets"),
                                                scanner_tool=args.scanner_tool, scanner_scale=scale)
+    progress.log("derived %d findings, %d assets, %d rejected; grouping into severity-lane batches", len(findings), len(scans), len(rejected))
     now = datetime.now(timezone.utc)
     source_dates = {label: batch_time(tables.get(label, [])) for label in ("findings", "assets")}
     if tables.get("tenable_assets") is not None:
@@ -249,6 +260,7 @@ def _main(argv):
         max_record_bytes=args.max_record_bytes, rejected=len(rejected), source_dates=source_dates,
         grow_buckets=True)
 
+    progress.log("built %d records; writing %s/records.json", len(records), args.output_dir)
     _dump(os.path.join(args.output_dir, "records.json"), records, indent=None)
     try:
         profile = build_profile(tables, joined, findings, scans)
@@ -299,10 +311,19 @@ def _main(argv):
     session_id = "vipr-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     conn, res = os.environ["DRATA_CONNECTION_ID"], os.environ["DRATA_RESOURCE_ID"]
     if push_mode == "session":
+        progress.log("starting session replace %s", session_id)
         ok, failed, action = dc.replace_via_session(conn, res, records, session_id)
+        if action == "unusable":
+            print("WARNING: Drata did not attach staged records to the session on this tenant (%s); falling back to upsert. "
+                  "Old records are NOT removed; to start clean, create a new custom connection." % failed[-1]["error"],
+                  file=sys.stderr)
+            progress.log("falling back to upsert")
+            ok, failed = dc.upsert(conn, res, records)
+            action = "upsert fallback"
         outcome = action if not any(f["error"].startswith("session %s failed" % action) for f in failed) else action + " FAILED"
         print("session=%s pushed=%d failed=%d -> %s" % (session_id, ok, len(failed), outcome))
     else:
+        progress.log("starting upsert of %d records", len(records))
         ok, failed = dc.upsert(conn, res, records)
         print("upsert pushed=%d failed=%d" % (ok, len(failed)))
     print("drata http responses: %s" % (dc.http_counts,))
@@ -318,6 +339,7 @@ def _main(argv):
 
 
 def _verify(dc, conn, res, records):
+    progress.log("reading records back from Drata to confirm they landed")
     try:
         listed = dc.list_records(conn, res)
         if listed is None:
@@ -331,7 +353,10 @@ def _verify(dc, conn, res, records):
         if legacy:
             print("note: Drata still holds old per-finding records (%d+, e.g. %s). They bury the new records in the Manage tab; "
                   "run once: vipr-drata --push-mode session" % (len(legacy), legacy[0][:60]), file=sys.stderr)
-        if not seen:
+        if not seen and total is not None and total > len(ids):
+            print("note: checked only the first %d of %d records Drata holds, so this cannot confirm ours landed; open the "
+                  "connection's Manage tab and search for 'summary'" % (len(ids), total), file=sys.stderr)
+        elif not seen:
             print("WARNING: none of the submitted records are visible in Drata. Check that DRATA_CONNECTION_ID and "
                   "DRATA_RESOURCE_ID are the connection you are viewing, and that DRATA_API_KEY belongs to the same "
                   "Drata workspace.", file=sys.stderr)

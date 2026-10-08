@@ -4,6 +4,8 @@ import time
 
 import requests
 
+from .. import progress
+
 
 def _clean(v):
     return None if v is None or v == "null" or v == "" else v
@@ -35,19 +37,23 @@ def _download(url, chunk_index):
 def run_sql(client, warehouse_id, sql, timeout_s=1800):
     from databricks.sdk.service.sql import Disposition, Format, StatementState
 
+    progress.log("submitting SQL to warehouse %s", warehouse_id)
     resp = client.statement_execution.execute_statement(
         statement=sql, warehouse_id=warehouse_id, wait_timeout="50s",
         disposition=Disposition.EXTERNAL_LINKS, format=Format.CSV,
     )
-    deadline = time.time() + timeout_s
+    started = time.time()
+    deadline = started + timeout_s
     while resp.status.state in (StatementState.PENDING, StatementState.RUNNING):
         if time.time() > deadline:
             raise TimeoutError("statement %s timed out" % resp.statement_id)
+        progress.log("statement %s, %ds elapsed", getattr(resp.status.state, "value", resp.status.state), time.time() - started)
         time.sleep(2)
         resp = client.statement_execution.get_statement(resp.statement_id)
     if resp.status.state != StatementState.SUCCEEDED:
         raise RuntimeError("SQL failed: %s" % (resp.status.error,))
     columns = [c.name for c in resp.manifest.schema.columns]
+    progress.log("query finished in %ds, downloading results (%d columns)", time.time() - started, len(columns))
     records = []
     chunk = resp.result
     while chunk is not None:
@@ -57,6 +63,7 @@ def run_sql(client, warehouse_id, sql, timeout_s=1800):
             if rows and [c.lower() for c in rows[0]] == [c.lower() for c in columns]:
                 rows = rows[1:]
             records.extend(rows_to_records(columns, rows))
+            progress.log("downloaded chunk %s: +%d rows (%d total)", chunk.chunk_index, len(rows), len(records))
         if chunk.next_chunk_index is None:
             break
         chunk = client.statement_execution.get_statement_result_chunk_n(

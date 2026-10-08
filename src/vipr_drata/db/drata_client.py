@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
+from .. import progress
+
 MAX_BODY_BYTES = 4 * 1024 * 1024  # Drata limit 5 MB
 RECORD_ERRORS = {400, 413, 422}  # other 4xx are request-level: stop sending
 PERMANENT = (requests.exceptions.InvalidHeader, requests.exceptions.InvalidURL,
@@ -50,6 +52,7 @@ class DrataClient:
         self._fatal = None
         self._unverified = []
         self._codes = []
+        self._sampled = []
         self._stop = threading.Event()
 
     @property
@@ -110,6 +113,7 @@ class DrataClient:
                 errors += 1
                 if errors > max_errors:
                     return False, type(e).__name__, None
+                progress.log("%s talking to Drata, retry %d/%d in %.0fs", type(e).__name__, errors, max_errors, self.backoff * errors)
                 self._sleep(self.backoff * errors)
                 continue
             code = resp.status_code
@@ -120,15 +124,19 @@ class DrataClient:
                     if not force:  # circuit breaker: stop the remaining batches retrying
                         self._fatal = "rate limited: retries exhausted"
                     return False, "rate limited", None
-                self._sleep(self._retry_after(resp, self.backoff * limits))
+                wait = self._retry_after(resp, self.backoff * limits)
+                progress.log("rate limited (HTTP 429), waiting %.0fs, retry %d/%d", wait, limits, max_limits)
+                self._sleep(wait)
             elif code >= 500:
                 errors += 1
                 if errors > max_errors:
                     return False, "HTTP %s" % code, None
+                progress.log("Drata returned HTTP %s, retry %d/%d in %.0fs", code, errors, max_errors, self.backoff * errors)
                 self._sleep(self.backoff * errors)
             elif code >= 400:
                 if code not in RECORD_ERRORS:
                     self._fatal = "HTTP %s: %s" % (code, resp.text[:200])
+                progress.log("Drata rejected a request: HTTP %s %s", code, resp.text[:200])
                 return False, "HTTP %s: %s" % (code, resp.text[:200]), None
             else:
                 return True, None, resp
@@ -159,6 +167,9 @@ class DrataClient:
             return 0, [{"id": r.get("id"), "error": "not sent: " + self._fatal} for r in batch]
         ok, err, resp = self._send(url, {"data": batch})
         if ok:
+            if not self._sampled:
+                self._sampled.append(1)
+                progress.log("first Drata response: HTTP %s %s", resp.status_code, str(resp.text)[:200].replace("\n", " "))
             bad = self._item_errors(resp, batch)
             return len(batch) - len(bad), bad
         if len(batch) > 1 and not self._fatal and any(err.startswith("HTTP %d" % c) for c in RECORD_ERRORS):
@@ -174,15 +185,19 @@ class DrataClient:
             return good, failed
         return 0, [{"id": r.get("id"), "error": err} for r in batch]
 
-    def _push_all(self, url, records):
+    def _push_all(self, url, records, what="records"):
         self._fatal = None
         ok, failed = 0, []
         batches = list(chunk_records(records, self.batch_size))
+        progress.log("sending %d %s in %d request(s) (%d at a time)", len(records), what, len(batches), self.workers)
         ex = ThreadPoolExecutor(max_workers=self.workers)
         try:
-            for g, f in ex.map(lambda b: self._push_batch(url, b), batches):
+            for n, (batch, (g, f)) in enumerate(zip(batches, ex.map(lambda b: self._push_batch(url, b), batches)), 1):
                 ok += g
                 failed.extend(f)
+                progress.log("request %d/%d: %d record(s) %s, %s -> accepted %d, failed %d (running total %d/%d)",
+                             n, len(batches), len(batch), ",".join(str(r.get("id")) for r in batch[:2]) + ("..." if len(batch) > 2 else ""),
+                             progress.megabytes(len(dumps({"data": batch}))), g, len(f), ok, len(records))
         except BaseException:
             self._fatal = INTERRUPTED
             self._stop.set()
@@ -207,7 +222,17 @@ class DrataClient:
         return found, total
 
     def upsert(self, connection_id, resource_id, records):
-        return self._push_all(self._base(connection_id, resource_id) + "/records", records)
+        return self._push_all(self._base(connection_id, resource_id) + "/records", records, "records (upsert)")
+
+    def session_record_count(self, base, session_id):
+        data = self._get("%s/records?sessionId=%s&limit=100" % (base, session_id))
+        if isinstance(data, dict):
+            total = next((data[k] for k in ("total", "totalCount", "count") if isinstance(data.get(k), int)), None)
+            data = next((data[k] for k in WRAPPER_KEYS if isinstance(data.get(k), list)), None)
+            if isinstance(data, list):
+                return total if total is not None else len(data)
+            return total
+        return len(data) if isinstance(data, list) else None
 
     def _get(self, url):
         errors = limits = 0
@@ -269,23 +294,45 @@ class DrataClient:
             return 0, [{"id": None, "error": "empty snapshot: refusing session replace"}], "skipped"
         base = self._base(connection_id, resource_id)
         actions = base + "/sessions/%s/actions" % session_id
+        stage = "%s/sessions/%s" % (base, session_id)
         finished = False
         # complete hard-deletes every record not staged
         try:
+            progress.log("session %s: looking for stale in-progress sessions", session_id)
             stale = self._stale_sessions(base, session_id)
             for sid in stale or []:
+                progress.log("cancelling stale session %s (older than 2 h)", sid)
                 self._post(base + "/sessions/%s/actions" % sid, {"action": "cancel"}, force=True)
-            ok, failed = self._push_all("%s/sessions/%s" % (base, session_id), records)
+            progress.log("session %s: staging 1 probe record to check Drata attaches it to the session", session_id)
+            ok, failed = self._push_all(stage, records[:1], "probe record")
+            seen = self.session_record_count(base, session_id) if not failed else None
+            progress.log("probe: Drata reports %s staged record(s) in the session", "an unknown number of" if seen is None else seen)
+            if not failed and seen == 0:
+                self._post(actions, {"action": "cancel"}, force=True)
+                finished = True
+                return 0, [{"id": None, "error": "Drata accepted the staged record but lists none in the session"}], "unusable"
+            if not failed and len(records) > 1:
+                more_ok, failed = self._push_all(stage, records[1:], "records (staging)")
+                ok += more_ok
+            staged = self.session_record_count(base, session_id) if not failed else None
+            if staged is not None:
+                progress.log("session %s: Drata reports %d staged record(s) (we sent %d)", session_id, staged, len(records))
             action = "complete" if not failed else "cancel"
+            progress.log("session %s: %s", session_id, "completing (atomic replace of the dataset)" if action == "complete" else "cancelling because staging had failures")
             done, err = self._post(actions, {"action": action})
             finished = done
             if not done:
                 failed.append({"id": None, "error": "session %s failed: %s" % (action, err)})
                 if action == "complete":
+                    progress.log("complete failed (%s); cancelling the session", err)
                     self._post(actions, {"action": "cancel"}, force=True)
+                    if err and "no data records" in err:
+                        return ok, failed, "unusable"
                     if stale is None:
                         failed.append({"id": None, "error": "in-progress sessions could not be listed; a session from "
                                                              "another run may be blocking complete"})
+            else:
+                progress.log("session %s: %s done", session_id, action)
             return ok, failed, action
         except BaseException:
             if not finished:

@@ -1,7 +1,9 @@
 import os
+import time
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 
+from .. import progress
 from ..db.queries import latest_batch_clause, run_sql
 from ..transform import collapse_identical
 
@@ -33,11 +35,17 @@ def _pull(client, warehouse_id, spec):
     if not table:
         raise RuntimeError("%s not set" % spec.env_var)
     sql = "SELECT %s FROM %s WHERE %s" % (", ".join(spec.columns), table, latest_batch_clause(table))
-    return spec.label, run_sql(client, warehouse_id, sql)
+    with progress.label(spec.label):
+        progress.log("pulling %d columns from %s (latest ingest batch only)", len(spec.columns), table)
+        started = time.time()
+        rows = run_sql(client, warehouse_id, sql)
+        progress.log("done: %d rows in %ds", len(rows), time.time() - started)
+    return spec.label, rows
 
 
 def extract_all(client, warehouse_id):
     specs = active_specs()
+    progress.log("extracting %d table(s) from Databricks in parallel: %s", len(specs), ", ".join(s.label for s in specs))
     with ThreadPoolExecutor(max_workers=len(specs)) as ex:
         return dict(ex.map(lambda s: _pull(client, warehouse_id, s), specs))
 

@@ -285,3 +285,56 @@ def test_push_flags_old_per_finding_records_that_bury_the_new_ones(monkeypatch, 
     assert "vipr-drata --push-mode session" in err
     assert _push_with_listing(monkeypatch, tmp_path, (["summary"], 1)) == 0
     assert "old per-finding records" not in capsys.readouterr().err
+
+
+def test_cli_falls_back_to_upsert_when_sessions_do_not_hold_records(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("DRATA_CONNECTION_ID", "1")
+    monkeypatch.setenv("DRATA_RESOURCE_ID", "2")
+    monkeypatch.setenv("DRATA_API_KEY", "k")
+    with mock.patch.object(cli, "DrataClient") as DC:
+        client = DC.return_value
+        client.replace_via_session.return_value = (0, [{"id": None, "error": "session complete failed: HTTP 422: no data records"}], "unusable")
+        client.upsert.return_value = (18, [])
+        client.unverified = 0
+        client.http_counts = {200: 3}
+        client.list_records.return_value = None
+        assert local(tmp_path, "--push") == 0
+    captured = capsys.readouterr()
+    assert "falling back to upsert" in captured.err and "create a new custom connection" in captured.err
+    assert client.upsert.call_count == 1 and "-> upsert fallback" in captured.out
+
+
+def test_progress_lines_show_every_stage_and_quiet_removes_them(tmp_path, capsys):
+    assert local(tmp_path) == 0
+    out = capsys.readouterr().out
+    for stage in ("vipr-drata ", "loaded findings=", "joining findings to assets", "derived ", "built ", "writing "):
+        assert stage in out, stage
+    assert out.count("[00:") >= 5
+    assert local(tmp_path, "--quiet") == 0
+    quiet = capsys.readouterr().out
+    assert "[00:" not in quiet and "findings=" in quiet and "records=" in quiet
+
+
+def test_progress_shows_retries_and_each_request(monkeypatch, capsys):
+    from vipr_drata import progress
+    from vipr_drata.db.drata_client import DrataClient
+    progress.start()
+    sess = mock.Mock()
+    sess.post.side_effect = [mock.Mock(status_code=429, headers={"Retry-After": "7"}, text=""),
+                             mock.Mock(status_code=200, headers={}, text='[{"statusCode":201}]', json=lambda: [{"statusCode": 201}])]
+    c = DrataClient("http://x", "k", backoff=0, workers=1)
+    c._build_session = lambda: sess
+    c._sleep = lambda s: None
+    c.upsert(1, 2, [{"id": "a"}])
+    out = capsys.readouterr().out
+    assert "rate limited (HTTP 429), waiting 7s, retry 1/10" in out
+    assert "sending 1 records (upsert) in 1 request(s)" in out and "request 1/1: 1 record(s) a" in out
+    assert "first Drata response: HTTP 200" in out
+
+
+def test_readback_does_not_cry_wolf_when_it_only_saw_part_of_a_large_resource(monkeypatch, tmp_path, capsys):
+    legacy = ["asset:old-%d" % i for i in range(500)]
+    assert _push_with_listing(monkeypatch, tmp_path, (legacy, 190000)) == 0
+    err = capsys.readouterr().err
+    assert "checked only the first 500 of 190000 records" in err and "WARNING: none of the submitted" not in err
+    assert "old per-finding records (500+" in err

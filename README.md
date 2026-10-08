@@ -17,6 +17,8 @@ Batch counts: `FINDING_LANE_BUCKETS` (default `{"critical":1,"high":2,"medium":4
 
 Default push mode is `session`: all records are staged, then atomically replace the dataset. Records not staged (old per-finding records, orphaned batches) are deleted. Any failure, including a failed `complete`, SIGINT or SIGTERM, cancels the session and leaves the previous data. Sessions of this tool older than 2 hours that were left `IN_PROGRESS` by a killed run are cancelled first; other sessions are never touched. The bundle sets `max_concurrent_runs: 1`. `--push-mode upsert` only updates and never deletes, so if batch counts shrink later the higher-numbered records keep stale items (use session mode).
 
+Progress is printed step by step with elapsed time (`--quiet` hides it). If Drata does not attach staged records to the session (probe fails or `complete` returns 422 "no data records"), the run cancels the session and falls back to upsert, which leaves old records in place; start clean with a new custom connection.
+
 Migrating from the old one-record-per-finding design: run once with `--push-mode session` (upsert never deletes, so ~190k old `finding:*` / `asset:*` records would stay and bury the new ones; the push prints a note when it sees them).
 
 Reference run, 170k findings + 21k assets: 78 records, ~91 MB, largest record 1.6 MB, 28 requests (list, 26 stage, complete), ~12 s, ~0.6 GB memory (`--local --local-rows 170000`).
