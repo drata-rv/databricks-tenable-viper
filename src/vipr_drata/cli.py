@@ -174,7 +174,7 @@ def _main(argv):
     if bad:
         p.error("malformed --env (need KEY=VALUE): " + ", ".join(bad))
     args = p.parse_args(argv)
-    log.start(quiet=args.quiet)
+    log.start(quiet=args.quiet, path=os.path.join(args.output_dir, "_run.log"))
 
     if args.max_reject_ratio is None:
         args.max_reject_ratio = 1.0 if args.local else 0.05

@@ -1,5 +1,6 @@
 import contextlib
 import json
+import os
 import re
 import sys
 import threading
@@ -7,12 +8,18 @@ from datetime import datetime, timezone
 
 _lock = threading.Lock()
 _local = threading.local()
-_state = {"quiet": False}
+_state = {"quiet": False, "file": None}
 _BARE = re.compile(r"[A-Za-z0-9_.:/@+,=%\-]+\Z")
 
 
-def start(quiet=False):
+def start(quiet=False, path=None):
     _state["quiet"] = quiet
+    if _state["file"]:
+        _state["file"].close()
+        _state["file"] = None
+    if path:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        _state["file"] = open(path, "w", encoding="utf-8")
 
 
 @contextlib.contextmanager
@@ -46,12 +53,15 @@ def _emit(level, component, event, fields):
     line = "%s.%03dZ %-5s %s %s%s" % (now.strftime("%Y-%m-%dT%H:%M:%S"), now.microsecond // 1000, level, component, event,
                                       "".join(" %s=%s" % (k, _value(v)) for k, v in merged.items()))
     with _lock:
-        print(line, file=sys.stdout if level == "INFO" else sys.stderr, flush=True)
+        if _state["file"]:
+            _state["file"].write(line + "\n")
+            _state["file"].flush()
+        if not (level == "INFO" and _state["quiet"]):
+            print(line, file=sys.stdout if level == "INFO" else sys.stderr, flush=True)
 
 
 def info(component, event, **fields):
-    if not _state["quiet"]:
-        _emit("INFO", component, event, fields)
+    _emit("INFO", component, event, fields)
 
 
 def warn(component, event, **fields):

@@ -42,7 +42,7 @@ vipr-drata --dry-run                  # real Databricks, no push
 vipr-drata                            # push (sandbox unless --drata-prod)
 vipr-drata --push-mode session        # atomic replace; deletes records not in this run
 ```
-Output in `./output`: `records.json` (exactly what is submitted), `_rejected.json`, `_profile.json` (`_failed.json` on push errors).
+Output in `./output`: `_run.log` (every log line of the run, also with `--quiet`), `records.json` (exactly what is submitted), `_rejected.json`, `_profile.json` (`_failed.json` on push errors).
 `_profile.json` explains null fields: `raw_tool_severity` (keys/values seen, `vipr_severity_by_tool_value`), asset join outcomes, per-column null counts.
 Tunables (env vars, blank = default; see `.env.example`; all reach the Databricks job): `FINDING_LANE_BUCKETS` (lane minimums, 1-256 each), `ASSET_BUCKETS` (4, 1-256), `CLOSED_LOOKBACK_DAYS` (90), `MAX_SOURCE_AGE_DAYS` (3), `MAX_RECORD_BYTES` (4000000, 100000-4500000), `MIN_FINDINGS` / `MIN_ASSETS` (1), `MAX_REJECT_RATIO` (0.05; 0-1; off with `--local`), `SCAN_STALE_DAYS` (7).
 

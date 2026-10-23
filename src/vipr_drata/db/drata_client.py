@@ -1,3 +1,4 @@
+import itertools
 import json
 import math
 import threading
@@ -237,7 +238,9 @@ class DrataClient:
         log.info("drata", "send.start", what=what, records=len(records), requests=len(batches), concurrency=self.workers)
         ex = ThreadPoolExecutor(max_workers=self.workers)
         try:
-            for n, (batch, (g, f)) in enumerate(zip(batches, ex.map(lambda b: self._push_batch(url, b), batches)), 1):
+            head = [self._push_batch(url, batches[0])] if batches else []
+            tail = ex.map(lambda b: self._push_batch(url, b), batches[1:])
+            for n, (batch, (g, f)) in enumerate(zip(batches, itertools.chain(head, tail)), 1):
                 ok += g
                 failed.extend(f)
                 log.info("drata", "request.complete", n=n, of=len(batches), records=len(batch), first_id=batch[0].get("id"),
