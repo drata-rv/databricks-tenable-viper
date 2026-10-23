@@ -141,6 +141,17 @@ class DrataClient:
             else:
                 return True, None, resp
 
+    @staticmethod
+    def _item_error(item):
+        if not isinstance(item, dict):
+            return None
+        status, err = item.get("statusCode"), item.get("error")
+        nested = err.get("statusCode") if isinstance(err, dict) else None
+        if not (err or (isinstance(status, int) and status not in (200, 201)) or (isinstance(nested, int) and nested >= 400)):
+            return None
+        msg = (err.get("message") if isinstance(err, dict) else err) or ""
+        return "item status %s: %s" % (nested if isinstance(nested, int) else status, str(msg)[:600])
+
     def _item_errors(self, resp, batch):
         try:
             data = resp.json()
@@ -154,11 +165,9 @@ class DrataClient:
             return []
         out = []
         for rec, item in zip(batch, data):
-            status = item.get("statusCode") if isinstance(item, dict) else None
-            if status is not None and status not in (200, 201):
-                err = item.get("error")
-                msg = (err.get("message") if isinstance(err, dict) else err) or ""
-                out.append({"id": rec.get("id"), "error": "item status %s: %s" % (status, str(msg)[:200])})
+            msg = self._item_error(item)
+            if msg:
+                out.append({"id": rec.get("id"), "error": msg})
         out += [{"id": rec.get("id"), "error": "no per-item result returned"} for rec in batch[len(data):]]
         return out
 
@@ -169,7 +178,7 @@ class DrataClient:
         if ok:
             if not self._sampled:
                 self._sampled.append(1)
-                progress.log("first Drata response: HTTP %s %s", resp.status_code, str(resp.text)[:200].replace("\n", " "))
+                progress.log("first Drata response: HTTP %s %s", resp.status_code, str(resp.text)[:600].replace("\n", " "))
             bad = self._item_errors(resp, batch)
             return len(batch) - len(bad), bad
         if len(batch) > 1 and not self._fatal and any(err.startswith("HTTP %d" % c) for c in RECORD_ERRORS):
@@ -220,6 +229,21 @@ class DrataClient:
             if len(data) < limit:
                 break
         return found, total
+
+    def resource_schema(self, connection_id, resource_id):
+        data = self._get("%s/public/v2/custom-connections/%s?expand[]=customResources" % (self.base_url, connection_id))
+        if isinstance(data, dict):
+            data = data.get("data") if isinstance(data.get("data"), dict) else data
+            for res in data.get("customResources") or []:
+                if isinstance(res, dict) and str(res.get("id")) == str(resource_id):
+                    schema = res.get("schema")
+                    if isinstance(schema, str):
+                        try:
+                            schema = json.loads(schema)
+                        except ValueError:
+                            return None
+                    return schema if isinstance(schema, dict) else None
+        return None
 
     def upsert(self, connection_id, resource_id, records):
         return self._push_all(self._base(connection_id, resource_id) + "/records", records, "records (upsert)")
