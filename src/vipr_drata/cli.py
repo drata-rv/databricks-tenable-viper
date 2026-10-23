@@ -319,7 +319,7 @@ def _main(argv):
         ok, failed, action = dc.replace_via_session(conn, res, records, session_id, cancel_foreign=args.cancel_open_sessions)
         if action == "unusable":
             print("WARNING: session replace is not usable here (%s); falling back to upsert. Old records are NOT removed; "
-                  "to start clean, create a new custom connection." % failed[-1]["error"], file=sys.stderr)
+                  "to remove old records, use a new custom connection." % failed[-1]["error"], file=sys.stderr)
             progress.log("falling back to upsert")
             ok, failed = dc.upsert(conn, res, records)
             action = "upsert fallback"
@@ -344,9 +344,9 @@ def _main(argv):
         for msg, ids in list(by_error.items())[:3]:
             print("  x%d (e.g. %s): %s" % (len(ids), ids[0], msg), file=sys.stderr)
         if any("Schema validation failed" in m for m in by_error):
-            print("The Drata connection's schema does not match these records (it was created from an older schema). "
-                  "Create a NEW custom connection from schemas/vipr_unified.schema.json and set DRATA_CONNECTION_ID / "
-                  "DRATA_RESOURCE_ID to it.", file=sys.stderr)
+            print("The resource's schema in Drata does not match these records (it holds an older schema). In Drata, edit "
+                  "this resource's schema and paste schemas/vipr_unified.schema.json; connection and resource ids stay "
+                  "the same.", file=sys.stderr)
     return 1 if failed else 0
 
 
@@ -363,9 +363,9 @@ def _schema_mismatch(dc, conn, res, records):
         extra = sorted({k for r in records for k in r if k not in declared}) if closed else []
         if missing or extra:
             print("ABORT: the Drata resource schema does not match this tool's records (required but not sent: %s; sent but "
-                  "not in schema: %s). Drata would reject every record. The connection was created from an older schema: "
-                  "create a NEW custom connection from schemas/vipr_unified.schema.json and set DRATA_CONNECTION_ID / "
-                  "DRATA_RESOURCE_ID to it. Nothing sent." % (missing[:8] or "none", extra[:8] or "none"), file=sys.stderr)
+                  "not in schema: %s). Drata would reject every record. The resource holds an older schema: in Drata, edit "
+                  "this resource's schema and paste schemas/vipr_unified.schema.json (connection and resource ids stay the "
+                  "same), then rerun. Nothing sent." % (missing[:8] or "none", extra[:8] or "none"), file=sys.stderr)
             return True
     except Exception as e:
         print("schema check skipped: %s" % type(e).__name__, file=sys.stderr)
@@ -386,8 +386,8 @@ def _verify(dc, conn, res, records):
         legacy = [i for i in ids if i.startswith(("finding:", "asset:"))]
         if legacy:
             print("note: Drata still holds old per-finding records (%d+, e.g. %s). They bury the new records in the Manage tab; "
-                  "point DRATA_CONNECTION_ID / DRATA_RESOURCE_ID at a NEW custom connection created from "
-                  "schemas/vipr_unified.schema.json" % (len(legacy), legacy[0][:60]), file=sys.stderr)
+                  "run once: vipr-drata --push-mode session (removes them), or use a new custom connection" %
+                  (len(legacy), legacy[0][:60]), file=sys.stderr)
         if not seen and total is not None and total > len(ids):
             print("note: checked only the first %d of %d records Drata holds, so this cannot confirm ours landed; open the "
                   "connection's Manage tab and search for 'summary'" % (len(ids), total), file=sys.stderr)

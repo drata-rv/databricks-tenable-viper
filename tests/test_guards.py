@@ -282,7 +282,7 @@ def test_push_flags_old_per_finding_records_that_bury_the_new_ones(monkeypatch, 
     assert _push_with_listing(monkeypatch, tmp_path, (old + ["summary"], 3)) == 0
     err = capsys.readouterr().err
     assert "old per-finding records (2+, e.g. asset:nationwide____DedupedHostAsset____f0cc07)" in err
-    assert "NEW custom connection" in err
+    assert "vipr-drata --push-mode session" in err
     assert _push_with_listing(monkeypatch, tmp_path, (["summary"], 1)) == 0
     assert "old per-finding records" not in capsys.readouterr().err
 
@@ -300,7 +300,7 @@ def test_cli_falls_back_to_upsert_when_sessions_do_not_hold_records(monkeypatch,
         client.list_records.return_value = None
         assert local(tmp_path, "--push") == 0
     captured = capsys.readouterr()
-    assert "falling back to upsert" in captured.err and "create a new custom connection" in captured.err
+    assert "falling back to upsert" in captured.err and "use a new custom connection" in captured.err
     assert client.upsert.call_count == 1 and "-> upsert fallback" in captured.out
 
 
