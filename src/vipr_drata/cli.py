@@ -15,7 +15,7 @@ from .etl.local import load_local_tables
 from .batching import (DEFAULT_ASSET_BUCKETS, MAX_BUCKETS, MAX_RECORD_BYTES_LIMIT, batch_time, build_records,
                        parse_lane_buckets, size_of)
 from .etl.sample_data import write_scale_data, write_sample_data
-from . import __version__, progress
+from . import __version__, log
 from .profile import build_profile, summary
 from .transform import SEVERITY_ORDER, build_payloads
 
@@ -129,7 +129,7 @@ def build_parser():
     p.add_argument("--push", action="store_true",
                    help="with --local: also push the SYNTHETIC data (in session mode it replaces the whole resource)")
     p.add_argument("--dry-run", action="store_true", help="extract+transform only, no push")
-    p.add_argument("--quiet", action="store_true", help="only print results, not step-by-step progress")
+    p.add_argument("--quiet", action="store_true", help="suppress INFO log lines; WARN and ERROR are always printed")
     p.add_argument("--cancel-open-sessions", action="store_true",
                    help="if an in-progress Drata session not created by this tool blocks session mode, cancel it too")
     p.add_argument("--env", action="append", metavar="KEY=VALUE", help="set an environment variable (job parameters)")
@@ -149,10 +149,10 @@ def main(argv=None):
     try:
         return _main(list(sys.argv[1:] if argv is None else argv))
     except ConfigError as e:
-        print("error: %s" % e, file=sys.stderr)
+        log.error("cli", "config.invalid", detail=str(e))
         return 2
     except KeyboardInterrupt:
-        print("interrupted: any open Drata session was cancelled", file=sys.stderr)
+        log.warn("cli", "interrupted", exit_code=130, open_session="cancelled")
         return 130
     finally:
         signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
@@ -174,7 +174,7 @@ def _main(argv):
     if bad:
         p.error("malformed --env (need KEY=VALUE): " + ", ".join(bad))
     args = p.parse_args(argv)
-    progress.start(quiet=args.quiet)
+    log.start(quiet=args.quiet)
 
     if args.max_reject_ratio is None:
         args.max_reject_ratio = 1.0 if args.local else 0.05
@@ -219,9 +219,9 @@ def _main(argv):
         if unset:
             raise ConfigError("missing source table setting(s): " + ", ".join(unset))
     args.scanner_tool = (args.scanner_tool or "").strip() or "tenable"
-    progress.log("vipr-drata %s | source: %s | push: %s | scanner tool: %s",
-                 __version__, "local files" if args.local else "Databricks workspace '%s' warehouse %s" % (args.workspace, args.warehouse_id),
-                 "none (dry run)" if args.dry_run else push_mode, args.scanner_tool)
+    log.info("cli", "run.start", version=__version__, source="local" if args.local else "databricks",
+             workspace=None if args.local else args.workspace, warehouse_id=None if args.local else args.warehouse_id,
+             push_mode="none" if args.dry_run else push_mode, scanner_tool=args.scanner_tool)
     for stale in ("_failed.json", "partial.json", "records.json", "_profile.json", "_rejected.json"):
         if os.path.exists(os.path.join(args.output_dir, stale)):
             os.remove(os.path.join(args.output_dir, stale))
@@ -230,29 +230,28 @@ def _main(argv):
         if args.local_rows > 0:
             args.local_data = os.path.join(args.local_data, "scale")
             write_scale_data(args.local_data, args.local_rows)
-            print("LOCAL MODE: generated %d synthetic findings in %s" % (args.local_rows, args.local_data))
+            log.info("local", "data.generated", kind="scale", findings=args.local_rows, path=args.local_data)
         elif not _has_tables(args.local_data):
             write_sample_data(args.local_data)
-            print("LOCAL MODE: generated synthetic sample tables in %s" % args.local_data)
+            log.info("local", "data.generated", kind="sample", path=args.local_data)
         tables = load_local_tables(args.local_data)
-        print("LOCAL MODE: tables from %s (no Databricks)" % args.local_data)
-        progress.log("loaded %s", ", ".join("%s=%d rows" % (k, len(v)) for k, v in tables.items()))
+        log.info("local", "tables.loaded", path=args.local_data, **{k: len(v) for k, v in tables.items()})
     else:
         try:
-            progress.log("connecting to Databricks workspace '%s'", args.workspace)
+            log.info("extract", "connect", workspace=args.workspace)
             tables = extract_all(get_client_for_env(args.workspace), args.warehouse_id)
-            progress.log("extracted %s", ", ".join("%s=%d rows" % (k, len(v)) for k, v in tables.items()))
+            log.info("extract", "complete", **{k: len(v) for k, v in tables.items()})
         except ConfigError:
             raise
         except Exception as e:
-            print("error: Databricks extraction failed: %s: %s" % (type(e).__name__, str(e)[:300]), file=sys.stderr)
+            log.error("extract", "failed", error_type=type(e).__name__, detail=str(e)[:300])
             return 1
-    progress.log("joining findings to assets and deriving SLA / ticket / severity signals")
+    log.info("transform", "join.start")
     joined, assets = merge(tables)
     findings, scans, rejected = build_payloads(joined, assets, args.stale_days,
                                                tenable_assets=tables.get("tenable_assets"),
                                                scanner_tool=args.scanner_tool, scanner_scale=scale)
-    progress.log("derived %d findings, %d assets, %d rejected; grouping into severity-lane batches", len(findings), len(scans), len(rejected))
+    log.info("transform", "derive.complete", findings=len(findings), assets=len(scans), rejected=len(rejected))
     now = datetime.now(timezone.utc)
     source_dates = {label: batch_time(tables.get(label, [])) for label in ("findings", "assets")}
     if tables.get("tenable_assets") is not None:
@@ -263,32 +262,30 @@ def _main(argv):
         max_record_bytes=args.max_record_bytes, rejected=len(rejected), source_dates=source_dates,
         grow_buckets=True)
 
-    progress.log("built %d records; writing %s/records.json", len(records), args.output_dir)
+    log.info("batch", "records.built", records=len(records), output=os.path.join(args.output_dir, "records.json"))
     _dump(os.path.join(args.output_dir, "records.json"), records, indent=None)
     try:
         profile = build_profile(tables, joined, findings, scans)
         _dump(os.path.join(args.output_dir, "_profile.json"), profile)
-        print(summary(profile))
+        log.info("profile", "summary", **summary(profile))
     except Exception as e:
-        print("profile skipped: %s" % type(e).__name__, file=sys.stderr)
+        log.warn("profile", "skipped", error_type=type(e).__name__)
     _dump(os.path.join(args.output_dir, "_rejected.json"), rejected)
-    print("findings=%d assets=%d rejected=%d records=%d largest_record=%.2fMB total=%.1fMB" % (
-        len(findings), len(scans), len(rejected), len(records), max(size_of(r) for r in records) / 1e6,
-        sum(size_of(r) for r in records) / 1e6))
+    log.info("batch", "summary", findings=len(findings), assets=len(scans), rejected=len(rejected), records=len(records),
+             largest_record_mb=log.mb(max(size_of(r) for r in records)), total_mb=log.mb(sum(size_of(r) for r in records)))
     if rejected:
-        print("rejected sample: %s" % [(r["resource"], r["reason"]) for r in rejected[:5]])
+        log.warn("transform", "rejected.sample", count=len(rejected), sample=["%s:%s" % (r["resource"], r["reason"]) for r in rejected[:5]])
     lane_counts = {r["severityLane"]: r["bucketCount"] for r in records if r["recordType"] == "findingBatch"}
-    print("batches: %s assets=%d (pin with FINDING_LANE_BUCKETS / ASSET_BUCKETS to stop counts moving)" %
-          (" ".join("%s=%d" % kv for kv in lane_counts.items()), records[0]["assetBuckets"]))
+    log.info("batch", "buckets", **lane_counts, assets=records[0]["assetBuckets"])
 
     # count what is actually submitted: an empty array makes every array test pass
     kept_findings, kept_assets = records[0]["findingCount"], records[0]["assetCount"]
     short = [n for n, have, need in (("findings", kept_findings, args.min_findings), ("assets", kept_assets, args.min_assets))
              if have < need]
     if short:
-        print("%s: extracted too few %s (need MIN_FINDINGS=%d / MIN_ASSETS=%d); nothing pushed" %
-              ("WARNING" if args.dry_run else "ABORT", " and ".join(short), args.min_findings, args.min_assets),
-              file=sys.stderr)
+        (log.warn if args.dry_run else log.error)(
+            "guard", "min_records.violated", short=short, findings=kept_findings, assets=kept_assets,
+            min_findings=args.min_findings, min_assets=args.min_assets, pushed=False)
     if args.dry_run:
         return 0
     if short:
@@ -296,19 +293,14 @@ def _main(argv):
 
     total = len(findings) + len(scans) + len(rejected)
     if total and len(rejected) / total > args.max_reject_ratio:
-        print("ABORT: rejected ratio %.1f%% > %.1f%%; nothing pushed" %
-              (100.0 * len(rejected) / total, 100.0 * args.max_reject_ratio), file=sys.stderr)
+        log.error("guard", "reject_ratio.exceeded", ratio=len(rejected) / total, max_ratio=args.max_reject_ratio, pushed=False)
         return 2
 
     base_url = _env_str("DRATA_API_BASE", "https://public-api.drata.com")
-    print("Drata tenant: %s | push mode: %s | target: %s connection=%s resource=%s" % (
-        "PROD" if args.drata_prod else "sandbox", push_mode, base_url, os.environ["DRATA_CONNECTION_ID"],
-        os.environ["DRATA_RESOURCE_ID"]))
-    if push_mode == "upsert":
-        print("note: upsert never deletes; if batch counts shrink later, records with higher numbers keep old items "
-              "(session mode removes them)", file=sys.stderr)
+    log.info("drata", "target", tenant="prod" if args.drata_prod else "sandbox", push_mode=push_mode, base_url=base_url,
+             connection_id=os.environ["DRATA_CONNECTION_ID"], resource_id=os.environ["DRATA_RESOURCE_ID"])
     if args.local and push_mode == "session":
-        print("WARNING: --local --push in session mode replaces the whole resource with synthetic data", file=sys.stderr)
+        log.warn("drata", "local_session_push.replaces_resource", data="synthetic")
     dc = DrataClient(base_url,
                      drata_api_key(args.drata_prod, args.workspace))
     if _schema_mismatch(dc, os.environ["DRATA_CONNECTION_ID"], os.environ["DRATA_RESOURCE_ID"], records):
@@ -316,38 +308,32 @@ def _main(argv):
     session_id = "vipr-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     conn, res = os.environ["DRATA_CONNECTION_ID"], os.environ["DRATA_RESOURCE_ID"]
     if push_mode == "session":
-        progress.log("starting session replace %s", session_id)
         ok, failed, action = dc.replace_via_session(conn, res, records, session_id, cancel_foreign=args.cancel_open_sessions)
         if action == "unusable":
-            print("WARNING: session replace is not usable here (%s); falling back to upsert. Old records are NOT removed; "
-                  "to remove old records, use a new custom connection." % failed[-1]["error"], file=sys.stderr)
-            progress.log("falling back to upsert")
+            log.warn("session", "replace.unusable", reason=failed[-1]["error"], fallback="upsert", old_records_removed=False)
             ok, failed = dc.upsert(conn, res, records)
-            action = "upsert fallback"
-        outcome = action if not any(f["error"].startswith("session %s failed" % action) for f in failed) else action + " FAILED"
-        print("session=%s pushed=%d failed=%d -> %s" % (session_id, ok, len(failed), outcome))
+            action = "upsert_fallback"
+        outcome = (action if not any(f["error"].startswith("session %s failed" % action) for f in failed) else action + "_failed").replace(" ", "_")
+        log.info("session", "replace.result", session_id=session_id, pushed=ok, failed=len(failed), outcome=outcome)
     else:
-        progress.log("starting upsert of %d records", len(records))
         ok, failed = dc.upsert(conn, res, records)
-        print("upsert pushed=%d failed=%d" % (ok, len(failed)))
-    print("drata http responses: %s" % (dc.http_counts,))
+        log.info("drata", "upsert.result", pushed=ok, failed=len(failed))
+    log.info("drata", "http.summary", responses={str(k): v for k, v in dc.http_counts.items()})
     if not failed:
         _verify(dc, conn, res, records)
     if dc.unverified:
-        print("warning: %d bulk response(s) carried no per-item results; failures inside them would be invisible"
-              % dc.unverified, file=sys.stderr)
+        log.warn("drata", "bulk_response.unverified", count=dc.unverified)
     if failed:
         _dump(os.path.join(args.output_dir, "_failed.json"), failed)
         by_error = {}
         for f in failed:
             by_error.setdefault(f["error"], []).append(f["id"])
-        print("%d record(s) failed, %d distinct error(s):" % (len(failed), len(by_error)), file=sys.stderr)
+        log.error("drata", "records.failed", count=len(failed), distinct_errors=len(by_error), details=os.path.join(args.output_dir, "_failed.json"))
         for msg, ids in list(by_error.items())[:3]:
-            print("  x%d (e.g. %s): %s" % (len(ids), ids[0], msg), file=sys.stderr)
+            log.error("drata", "records.failed.error", count=len(ids), example_id=ids[0], message=msg)
         if any("Schema validation failed" in m for m in by_error):
-            print("The resource's schema in Drata does not match these records (it holds an older schema). In Drata, edit "
-                  "this resource's schema and paste schemas/vipr_unified.schema.json; connection and resource ids stay "
-                  "the same.", file=sys.stderr)
+            log.error("drata", "schema.mismatch", cause="resource_schema_outdated",
+                      remedy="edit the resource schema in Drata and paste schemas/vipr_unified.schema.json")
     return 1 if failed else 0
 
 
@@ -355,7 +341,7 @@ def _schema_mismatch(dc, conn, res, records):
     try:
         schema = dc.resource_schema(conn, res)
         if not isinstance(schema, dict):
-            print("note: could not read the Drata resource schema; records are checked by Drata on upload", file=sys.stderr)
+            log.warn("schema", "read.unavailable", effect="validation_by_drata_on_upload")
             return False
         declared = schema.get("properties")
         required = [k for k in schema.get("required") or [] if isinstance(k, str)]
@@ -363,18 +349,16 @@ def _schema_mismatch(dc, conn, res, records):
         closed = isinstance(declared, dict) and schema.get("additionalProperties") is False
         extra = sorted({k for r in records for k in r if k not in declared}) if closed else []
         if missing or extra:
-            print("ABORT: the Drata resource schema does not match this tool's records (required but not sent: %s; sent but "
-                  "not in schema: %s). Drata would reject every record. The resource holds an older schema: in Drata, edit "
-                  "this resource's schema and paste schemas/vipr_unified.schema.json (connection and resource ids stay the "
-                  "same), then rerun. Nothing sent." % (missing[:8] or "none", extra[:8] or "none"), file=sys.stderr)
+            log.error("schema", "mismatch", required_not_sent=missing[:8] or "none", sent_not_in_schema=extra[:8] or "none",
+                      pushed=False, remedy="edit the resource schema in Drata and paste schemas/vipr_unified.schema.json")
             return True
     except Exception as e:
-        print("schema check skipped: %s" % type(e).__name__, file=sys.stderr)
+        log.warn("schema", "check.skipped", error_type=type(e).__name__)
     return False
 
 
 def _verify(dc, conn, res, records):
-    progress.log("reading the 3 newest records back from Drata (records are large, so only a sample is read)")
+    log.info("verify", "start", sample_size=3, order="newest_first")
     box = {}
 
     def read():
@@ -387,33 +371,29 @@ def _verify(dc, conn, res, records):
     reader.start()
     reader.join(45)
     if reader.is_alive():
-        print("verify skipped: Drata did not answer the read-back within 45 s (the push itself was accepted)", file=sys.stderr)
+        log.warn("verify", "timeout", seconds=45)
         return
     try:
         if "error" in box:
             raise box["error"]
         listed = box.get("listed")
         if listed is None:
-            print("verify: could not read the records back from Drata (the key may lack read scope)", file=sys.stderr)
+            log.warn("verify", "read.unavailable", cause="no_response_or_missing_read_scope")
             return
         ids, total = listed
         ours = {r["id"] for r in records}
         seen = len(ours & set(ids))
-        print("verify: Drata lists %d record(s) (total=%s); %d of our %d record ids are present" % (len(ids), total, seen, len(ours)))
+        log.info("verify", "result", sampled=len(ids), resource_total=total, ours_present=seen, ours_sent=len(ours))
         legacy = [i for i in ids if i.startswith(("finding:", "asset:"))]
         if legacy:
-            print("note: Drata still holds old per-finding records (%d+, e.g. %s). They bury the new records in the Manage tab; "
-                  "run once: vipr-drata --push-mode session (removes them), or use a new custom connection" %
-                  (len(legacy), legacy[0][:60]), file=sys.stderr)
+            log.warn("verify", "legacy_records.present", sampled=len(legacy), example_id=legacy[0][:60],
+                     remedy="vipr-drata --push-mode session")
         if not seen and (total is None or total > len(ids)):
-            print("note: only a %d-record sample was read, so this cannot confirm ours landed (Drata accepted every record "
-                  "in the push); open the connection's Manage tab and search for 'summary'" % len(ids), file=sys.stderr)
+            log.info("verify", "sample.inconclusive", sampled=len(ids), push_accepted=True)
         elif not seen:
-            print("WARNING: none of the submitted records are visible in Drata. Check that DRATA_CONNECTION_ID and "
-                  "DRATA_RESOURCE_ID are the connection you are viewing, and that DRATA_API_KEY belongs to the same "
-                  "Drata workspace.", file=sys.stderr)
+            log.warn("verify", "records.not_visible", ours_sent=len(ours), check="DRATA_CONNECTION_ID,DRATA_RESOURCE_ID,DRATA_API_KEY")
     except Exception as e:
-        print("verify skipped: %s" % type(e).__name__, file=sys.stderr)
+        log.warn("verify", "skipped", error_type=type(e).__name__)
 
 
 def run():

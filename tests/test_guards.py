@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
@@ -31,7 +32,7 @@ def test_cli_sizes_its_own_batches_in_either_push_mode(tmp_path, capsys, mode):
     lanes = {r["severityLane"]: r["bucketCount"] for r in recs if r["recordType"] == "findingBatch"}
     assert max(lanes.values()) > 4 and recs[0]["assetBuckets"] > 4
     assert max(size_of(r) for r in recs) < 150_000
-    assert "batches: critical=" in capsys.readouterr().out
+    assert "batch buckets critical=" in capsys.readouterr().out
 
 
 def test_an_old_env_with_upsert_and_default_sizes_no_longer_aborts_on_real_volume(monkeypatch, tmp_path):
@@ -109,7 +110,7 @@ A1 = {"silk_id": "a1", "name": "h", "is_active": "true", "last_seen": "2026-10-0
 def test_all_findings_older_than_the_lookback_cannot_wipe_the_dataset(monkeypatch, tmp_path, capsys):
     rc, DC = _run(monkeypatch, tmp_path, [_f()], [A1])
     assert rc == 2 and DC.return_value.replace_via_session.call_count == 0
-    assert "ABORT: extracted too few findings" in capsys.readouterr().err
+    assert "min_records.violated short=findings" in capsys.readouterr().err
     assert json.load(open(tmp_path / "records.json"))[0]["closedExcludedCount"] == 1
 
 
@@ -185,7 +186,7 @@ def test_local_push_in_session_mode_warns_that_it_replaces_the_resource(monkeypa
         DC.return_value.replace_via_session.return_value = (1, [], "complete")
         DC.return_value.unverified = 0
         assert local(tmp_path, "--push") == 0
-    assert "replaces the whole resource with synthetic data" in capsys.readouterr().err
+    assert "local_session_push.replaces_resource" in capsys.readouterr().err
 
 
 def test_a_failed_complete_is_reported_as_failed_not_as_complete(monkeypatch, tmp_path, capsys):
@@ -197,7 +198,7 @@ def test_a_failed_complete_is_reported_as_failed_not_as_complete(monkeypatch, tm
         DC.return_value.replace_via_session.return_value = (18, failure, "complete")
         DC.return_value.unverified = 0
         assert local(tmp_path, "--push") == 1
-    assert "-> complete FAILED" in capsys.readouterr().out and (tmp_path / "o" / "_failed.json").exists()
+    assert "outcome=complete_failed" in capsys.readouterr().out and (tmp_path / "o" / "_failed.json").exists()
 
 
 def _listing_client(pages):
@@ -248,23 +249,23 @@ def test_push_prints_the_target_http_counts_and_confirms_records_landed(monkeypa
     recs_ids = []
     assert _push_with_listing(monkeypatch, tmp_path, (["summary", "assets-000", "other"], 3)) == 0
     out = capsys.readouterr()
-    assert "target: https://public-api.drata.com connection=27 resource=2" in out.out or "invalid.test" in out.out
-    assert "connection=27 resource=2" in out.out and "drata http responses: {200: 1, 201: 2}" in out.out
-    assert "verify: Drata lists 3 record(s) (total=3); 2 of our 18 record ids are present" in out.out
-    assert "WARNING: none of the submitted" not in out.err
+    assert "drata target" in out.out
+    assert "connection_id=27 resource_id=2" in out.out and "drata http.summary responses=200:1,201:2" in out.out
+    assert "verify result sampled=3 resource_total=3 ours_present=2 ours_sent=18" in out.out
+    assert "records.not_visible" not in out.err
 
 
 def test_push_warns_loudly_when_none_of_our_records_are_visible(monkeypatch, tmp_path, capsys):
     assert _push_with_listing(monkeypatch, tmp_path, ([], 0)) == 0
     err = capsys.readouterr().err
-    assert "none of the submitted records are visible in Drata" in err and "DRATA_CONNECTION_ID" in err
+    assert "verify records.not_visible" in err and "DRATA_CONNECTION_ID" in err
 
 
 def test_push_survives_an_unreadable_or_failing_readback(monkeypatch, tmp_path, capsys):
     assert _push_with_listing(monkeypatch, tmp_path, None) == 0
-    assert "could not read the records back from Drata" in capsys.readouterr().err
+    assert "verify read.unavailable" in capsys.readouterr().err
     assert _push_with_listing(monkeypatch, tmp_path, RuntimeError("boom")) == 0
-    assert "verify skipped: RuntimeError" in capsys.readouterr().err
+    assert "verify skipped error_type=RuntimeError" in capsys.readouterr().err
 
 
 def test_http_counts_are_recorded_per_response():
@@ -282,10 +283,10 @@ def test_push_flags_old_per_finding_records_that_bury_the_new_ones(monkeypatch, 
     old = ["asset:nationwide____DedupedHostAsset____f0cc07", "finding:nationwide____DedupedTask____022a"]
     assert _push_with_listing(monkeypatch, tmp_path, (old + ["summary"], 3)) == 0
     err = capsys.readouterr().err
-    assert "old per-finding records (2+, e.g. asset:nationwide____DedupedHostAsset____f0cc07)" in err
+    assert "verify legacy_records.present sampled=2 example_id=asset:nationwide____DedupedHostAsset____f0cc07" in err
     assert "vipr-drata --push-mode session" in err
     assert _push_with_listing(monkeypatch, tmp_path, (["summary"], 1)) == 0
-    assert "old per-finding records" not in capsys.readouterr().err
+    assert "legacy_records.present" not in capsys.readouterr().err
 
 
 def test_cli_falls_back_to_upsert_when_sessions_do_not_hold_records(monkeypatch, tmp_path, capsys):
@@ -301,25 +302,26 @@ def test_cli_falls_back_to_upsert_when_sessions_do_not_hold_records(monkeypatch,
         client.list_records.return_value = None
         assert local(tmp_path, "--push") == 0
     captured = capsys.readouterr()
-    assert "falling back to upsert" in captured.err and "use a new custom connection" in captured.err
-    assert client.upsert.call_count == 1 and "-> upsert fallback" in captured.out
+    assert "session replace.unusable" in captured.err and "fallback=upsert" in captured.err
+    assert client.upsert.call_count == 1 and "outcome=upsert_fallback" in captured.out
 
 
 def test_progress_lines_show_every_stage_and_quiet_removes_them(tmp_path, capsys):
     assert local(tmp_path) == 0
     out = capsys.readouterr().out
-    for stage in ("vipr-drata ", "loaded findings=", "joining findings to assets", "derived ", "built ", "writing "):
-        assert stage in out, stage
-    assert out.count("[00:") >= 5
+    for event in ("cli run.start", "local tables.loaded", "transform join.start", "transform derive.complete",
+                  "batch records.built", "batch summary", "batch buckets"):
+        assert event in out, event
+    assert re.search(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z INFO  cli run.start ", out, flags=re.M)
     assert local(tmp_path, "--quiet") == 0
     quiet = capsys.readouterr().out
-    assert "[00:" not in quiet and "findings=" in quiet and "records=" in quiet
+    assert "INFO " not in quiet
 
 
 def test_progress_shows_retries_and_each_request(monkeypatch, capsys):
-    from vipr_drata import progress
+    from vipr_drata import log
     from vipr_drata.db.drata_client import DrataClient
-    progress.start()
+    log.start()
     sess = mock.Mock()
     sess.post.side_effect = [mock.Mock(status_code=429, headers={"Retry-After": "7"}, text=""),
                              mock.Mock(status_code=200, headers={}, text='[{"statusCode":201}]', json=lambda: [{"statusCode": 201}])]
@@ -327,15 +329,16 @@ def test_progress_shows_retries_and_each_request(monkeypatch, capsys):
     c._build_session = lambda: sess
     c._sleep = lambda s: None
     c.upsert(1, 2, [{"id": "a"}])
-    out = capsys.readouterr().out
-    assert "rate limited (HTTP 429), waiting 7s, retry 1/10" in out
-    assert "sending 1 records (upsert) in 1 request(s)" in out and "request 1/1: 1 record(s) a" in out
-    assert "first Drata response: HTTP 200" in out
+    captured = capsys.readouterr()
+    assert "WARN  drata rate_limited status=429 attempt=1 max_attempts=10 wait_s=7.00" in captured.err
+    assert "drata send.start what=\"records (upsert)\" records=1 requests=1 concurrency=" in captured.out
+    assert "drata request.complete n=1 of=1 records=1 first_id=a last_id=a" in captured.out
+    assert "drata response.sample status=200" in captured.out
 
 
 def test_readback_does_not_cry_wolf_when_it_only_saw_part_of_a_large_resource(monkeypatch, tmp_path, capsys):
     legacy = ["asset:old-%d" % i for i in range(500)]
     assert _push_with_listing(monkeypatch, tmp_path, (legacy, 190000)) == 0
-    err = capsys.readouterr().err
-    assert "only a 500-record sample was read" in err and "WARNING: none of the submitted" not in err
-    assert "old per-finding records (500+" in err
+    captured = capsys.readouterr()
+    assert "verify sample.inconclusive sampled=500" in captured.out and "records.not_visible" not in captured.err
+    assert "verify legacy_records.present sampled=500" in captured.err

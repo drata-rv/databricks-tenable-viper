@@ -65,7 +65,7 @@ def test_push_defaults_to_one_atomic_session_with_the_fixed_record_set(monkeypat
     ids = [r["id"] for r in call.args[2]]
     assert ids[0] == "summary" and len(ids) == 1 + 13 + 4 and len(set(ids)) == len(ids)
     assert "findings-medium-003" in ids and "assets-003" in ids
-    assert "Drata tenant: sandbox | push mode: session" in capsys.readouterr().out
+    assert "drata target tenant=sandbox push_mode=session" in capsys.readouterr().out
 
 
 def test_upsert_mode_sends_the_same_record_set_without_a_session(monkeypatch, tmp_path):
@@ -94,7 +94,7 @@ def test_unverified_bulk_responses_print_a_warning(monkeypatch, tmp_path, capsys
         DC.return_value.replace_via_session.return_value = (18, [], "complete")
         DC.return_value.unverified = 3
         assert cli.main(args) == 0
-    assert "3 bulk response(s) carried no per-item results" in capsys.readouterr().err
+    assert "bulk_response.unverified count=3" in capsys.readouterr().err
 
 
 def test_prod_flag_uses_prod_key_and_never_sandbox(monkeypatch, tmp_path):
@@ -144,10 +144,10 @@ def test_empty_source_aborts_before_any_push(monkeypatch, tmp_path, capsys, whic
             mock.patch.object(cli, "DrataClient") as DC:
         assert cli.main(args) == 2
         DC.assert_not_called()
-        assert "ABORT: extracted too few %s" % which in capsys.readouterr().err
+        assert "ERROR guard min_records.violated short=%s" % which in capsys.readouterr().err
         assert cli.main(args + [flag, "0", "--dry-run"]) == 0
         assert cli.main(args + ["--dry-run"]) == 0
-        assert "WARNING: extracted too few" in capsys.readouterr().err
+        assert "WARN  guard min_records.violated" in capsys.readouterr().err
 
 
 def test_a_stale_findings_table_is_not_hidden_by_a_fresh_assets_table(monkeypatch, tmp_path):

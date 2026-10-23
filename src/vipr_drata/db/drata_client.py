@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 from urllib.parse import quote
 
-from .. import progress
+from .. import log
 
 MAX_BODY_BYTES = 4 * 1024 * 1024  # Drata limit 5 MB
 RECORD_ERRORS = {400, 413, 422}  # other 4xx are request-level: stop sending
@@ -139,7 +139,7 @@ class DrataClient:
                 errors += 1
                 if errors > max_errors:
                     return False, type(e).__name__, None
-                progress.log("%s talking to Drata, retry %d/%d in %.0fs", type(e).__name__, errors, max_errors, self.backoff * errors)
+                log.warn("drata", "request.retry", error_type=type(e).__name__, attempt=errors, max_attempts=max_errors, wait_s=self.backoff * errors)
                 self._sleep(self.backoff * errors)
                 continue
             code = resp.status_code
@@ -151,18 +151,18 @@ class DrataClient:
                         self._fatal = "rate limited: retries exhausted"
                     return False, "rate limited", None
                 wait = self._retry_after(resp, self.backoff * limits)
-                progress.log("rate limited (HTTP 429), waiting %.0fs, retry %d/%d", wait, limits, max_limits)
+                log.warn("drata", "rate_limited", status=429, attempt=limits, max_attempts=max_limits, wait_s=wait)
                 self._sleep(wait)
             elif code >= 500:
                 errors += 1
                 if errors > max_errors:
                     return False, "HTTP %s" % code, None
-                progress.log("Drata returned HTTP %s, retry %d/%d in %.0fs", code, errors, max_errors, self.backoff * errors)
+                log.warn("drata", "server_error", status=code, attempt=errors, max_attempts=max_errors, wait_s=self.backoff * errors)
                 self._sleep(self.backoff * errors)
             elif code >= 400:
                 if code not in RECORD_ERRORS:
                     self._fatal = "HTTP %s: %s" % (code, resp.text[:200])
-                progress.log("Drata rejected a request: HTTP %s %s", code, resp.text[:400])
+                log.warn("drata", "request.rejected", status=code, body=resp.text[:400])
                 return False, "HTTP %s: %s" % (code, resp.text[:200]), None
             else:
                 return True, None, resp
@@ -211,11 +211,11 @@ class DrataClient:
         if ok:
             if not self._sampled:
                 self._sampled.append(1)
-                progress.log("first Drata response: HTTP %s %s", resp.status_code, str(resp.text)[:600].replace("\n", " "))
+                log.info("drata", "response.sample", status=resp.status_code, body=str(resp.text)[:600].replace("\n", " "))
             bad = self._item_errors(resp, batch)
             if bad and len(bad) == len(batch) and "Schema validation failed" in bad[0]["error"] and not self._fatal:
                 self._fatal = "stopped after the first request: " + bad[0]["error"][:300]
-                progress.log("every record in the first request was rejected by the connection schema; not sending the rest")
+                log.error("drata", "schema.rejected_all", scope="first_request", remaining_requests="not_sent")
             return len(batch) - len(bad), bad
         if len(batch) > 1 and not self._fatal and any(err.startswith("HTTP %d" % c) for c in RECORD_ERRORS):
             good, failed = 0, []
@@ -234,15 +234,15 @@ class DrataClient:
         self._fatal = None
         ok, failed = 0, []
         batches = list(chunk_records(records, self.batch_size))
-        progress.log("sending %d %s in %d request(s) (%d at a time)", len(records), what, len(batches), self.workers)
+        log.info("drata", "send.start", what=what, records=len(records), requests=len(batches), concurrency=self.workers)
         ex = ThreadPoolExecutor(max_workers=self.workers)
         try:
             for n, (batch, (g, f)) in enumerate(zip(batches, ex.map(lambda b: self._push_batch(url, b), batches)), 1):
                 ok += g
                 failed.extend(f)
-                progress.log("request %d/%d: %d record(s) %s, %s -> accepted %d, failed %d (running total %d/%d)",
-                             n, len(batches), len(batch), ",".join(str(r.get("id")) for r in batch[:2]) + ("..." if len(batch) > 2 else ""),
-                             progress.megabytes(len(dumps({"data": batch}))), g, len(f), ok, len(records))
+                log.info("drata", "request.complete", n=n, of=len(batches), records=len(batch), first_id=batch[0].get("id"),
+                         last_id=batch[-1].get("id"), size_mb=log.mb(len(dumps({"data": batch}))), accepted=g, failed=len(f),
+                         accepted_total=ok, records_total=len(records))
         except BaseException:
             self._fatal = INTERRUPTED
             self._stop.set()
@@ -360,8 +360,7 @@ class DrataClient:
         for i in data:
             if isinstance(i, dict):
                 counts[i.get("status")] = counts.get(i.get("status"), 0) + 1
-        progress.log("Drata lists %d session(s) on this resource: %s", len(data),
-                     ", ".join("%s=%s" % kv for kv in sorted(counts.items(), key=str)) or "none")
+        log.info("session", "list", total=len(data), by_status={str(k): v for k, v in sorted(counts.items(), key=str)})
         for item in data:
             if isinstance(item, dict) and item.get("status") not in (None, "IN_PROGRESS"):
                 continue
@@ -386,9 +385,9 @@ class DrataClient:
         open_ = [s for s in (self._open_sessions(base) or []) if s != own_id]
         mine = [s for s in open_ if s.startswith(SESSION_PREFIX)]
         foreign = [s for s in open_ if not s.startswith(SESSION_PREFIX)]
-        progress.log("Drata says another session is open: %s", ", ".join(open_) or "(not listed by the API)")
+        log.warn("session", "blocked", open_sessions=open_ or "not_listed")
         for sid in mine + (foreign if cancel_foreign else []):
-            progress.log("cancelling blocking session %s", sid)
+            log.info("session", "cancel.blocking", session_id=sid)
             self._post(base + "/sessions/%s/actions" % sid, {"action": "cancel"}, force=True)
         return open_, mine + (foreign if cancel_foreign else [])
 
@@ -401,12 +400,12 @@ class DrataClient:
         finished = False
         # complete hard-deletes every record not staged
         try:
-            progress.log("session %s: looking for stale in-progress sessions", session_id)
+            log.info("session", "replace.start", session_id=session_id, records=len(records))
             stale = self._stale_sessions(base, session_id)
             for sid in stale or []:
-                progress.log("cancelling stale session %s (older than 15 min)", sid)
+                log.info("session", "cancel.stale", session_id=sid, older_than_min=15)
                 self._post(base + "/sessions/%s/actions" % sid, {"action": "cancel"}, force=True)
-            progress.log("session %s: staging 1 probe record to check Drata attaches it to the session", session_id)
+            log.info("session", "probe.stage", session_id=session_id, records=1)
             ok, failed = self._push_all(stage, records[:1], "probe record")
             if failed and any("already in progress" in f["error"] for f in failed):
                 open_, cancelled = self._clear_blockers(base, session_id, cancel_foreign)
@@ -419,7 +418,7 @@ class DrataClient:
                                                      "cancel it in Drata or rerun with --cancel-open-sessions"
                                                      % (" (%s)" % ", ".join(left) if left else ", not listed by the API")}], "unusable"
             seen = self.session_record_count(base, session_id) if not failed else None
-            progress.log("probe: Drata reports %s staged record(s) in the session", "an unknown number of" if seen is None else seen)
+            log.info("session", "probe.result", session_id=session_id, visible_records=seen)
             if not failed and seen == 0:
                 self._post(actions, {"action": "cancel"}, force=True)
                 finished = True
@@ -428,13 +427,13 @@ class DrataClient:
                 more_ok, failed = self._push_all(stage, records[1:], "records (staging)")
                 ok += more_ok
             action = "complete" if not failed else "cancel"
-            progress.log("session %s: %s", session_id, "completing (atomic replace of the dataset)" if action == "complete" else "cancelling because staging had failures")
+            log.info("session", "%s.start" % action, session_id=session_id, reason="staged_all" if action == "complete" else "staging_failures")
             done, err = self._post(actions, {"action": action})
             finished = done
             if not done and not (action == "cancel" and err and "HTTP 404" in err):
                 failed.append({"id": None, "error": "session %s failed: %s" % (action, err)})
                 if action == "complete":
-                    progress.log("complete failed (%s); cancelling the session", err)
+                    log.warn("session", "complete.failed", session_id=session_id, error=err, next="cancel")
                     self._post(actions, {"action": "cancel"}, force=True)
                     if err and "no data records" in err:
                         return ok, failed, "unusable"
@@ -442,7 +441,7 @@ class DrataClient:
                         failed.append({"id": None, "error": "in-progress sessions could not be listed; a session from "
                                                              "another run may be blocking complete"})
             else:
-                progress.log("session %s: %s done", session_id, action)
+                log.info("session", "%s.done" % action, session_id=session_id)
             return ok, failed, action
         except BaseException:
             if not finished:

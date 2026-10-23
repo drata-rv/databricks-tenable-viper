@@ -31,7 +31,7 @@ def test_missing_databricks_config_is_a_clean_exit_2(monkeypatch, capsys):
     monkeypatch.setenv("VIPR_ASSETS_TABLE", "c.s.a")
     assert cli.main(["--dry-run", "--warehouse-id", "w"]) == 2
     err = capsys.readouterr().err
-    assert "error: Missing secret" in err and "Traceback" not in err
+    assert "config.invalid" in err and "Missing secret" in err and "Traceback" not in err
 
 
 def test_local_dir_with_unusable_files_is_a_clean_exit_2(tmp_path, capsys):
@@ -39,7 +39,7 @@ def test_local_dir_with_unusable_files_is_a_clean_exit_2(tmp_path, capsys):
     d.mkdir()
     (d / "stray.json").write_text("[]")
     assert local(tmp_path) == 2
-    assert "error:" in capsys.readouterr().err
+    assert "ERROR cli config.invalid" in capsys.readouterr().err
 
 
 def test_databricks_extraction_failure_is_exit_1_without_traceback(monkeypatch, capsys):
@@ -48,7 +48,8 @@ def test_databricks_extraction_failure_is_exit_1_without_traceback(monkeypatch, 
     with mock.patch.object(cli, "get_client_for_env"), \
             mock.patch.object(cli, "extract_all", side_effect=RuntimeError("SQL failed: PERMISSION_DENIED")):
         assert cli.main(["--dry-run", "--warehouse-id", "w"]) == 1
-    assert "Databricks extraction failed: RuntimeError: SQL failed" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "extract failed error_type=RuntimeError" in err and "SQL failed" in err
 
 
 @pytest.mark.parametrize("name,value,ok", [("SCAN_STALE_DAYS", "", True), ("SCAN_STALE_DAYS", "  ", True),

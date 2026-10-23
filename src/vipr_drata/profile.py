@@ -106,7 +106,7 @@ def build_profile(tables, joined, findings, assets):
 
 def summary(p):
     ts = {t: {c: v["count"] for c, v in cols.items()} for t, cols in p["unparseable_timestamps"].items()}
-    return ("profile: raw_findings=%d scannerSeverity_null=%d tool_severity_rows=%s keys=%s asset_resolution=%s "
-            "unparseable_ts=%s" % (p["raw_rows"].get("findings", 0), p["findings_null"]["scannerSeverity"],
-                                    p["raw_tool_severity"]["rows"], p["raw_tool_severity"]["keys"],
-                                    p["raw_asset_resolution"], ts))
+    return {"raw_findings": p["raw_rows"].get("findings", 0), "scanner_severity_null": p["findings_null"]["scannerSeverity"],
+            "tool_severity_rows": p["raw_tool_severity"]["rows"], "tool_severity_keys": p["raw_tool_severity"]["keys"],
+            "asset_resolution": p["raw_asset_resolution"],
+            "unparseable_ts": ",".join("%s.%s:%s" % (t, c, n) for t, cols in ts.items() for c, n in cols.items()) or "none"}

@@ -47,7 +47,7 @@ def test_cli_profile_exact_counts(tmp_path, capsys):
     assert p["unmatched_asset_id_samples"] == ["a-missing"]
     assert p["findings_null"]["scannerSeverity"] == 1 and p["tenable_match"]["matched"] == 1
     assert p["null_counts"]["findings"]["closed_timestamp"] == 6
-    assert "profile: raw_findings=7 scannerSeverity_null=1" in capsys.readouterr().out
+    assert "profile summary raw_findings=7 scanner_severity_null=1" in capsys.readouterr().out
     dumped = json.dumps(p)
     for leaked in ("f-001", "host-one", "CVE-2026-0001", "VIPR-001"):
         assert leaked not in dumped
@@ -67,7 +67,7 @@ def test_profile_distinguishes_null_from_unparseable_timestamp():
     p, _, _ = profile(rows, [A()])
     assert p["null_counts"]["findings"]["last_seen"] == 1
     assert p["unparseable_timestamps"] == {"findings": {"last_seen": {"count": 2, "samples": ["04/19/2022", "Apr 19, 2022"]}}}
-    assert "unparseable_ts={'findings': {'last_seen': 2}}" in summary(p)
+    assert summary(p)["unparseable_ts"] == "findings.last_seen:2"
 
 
 def test_profile_distinguishes_asset_join_causes():
@@ -111,7 +111,7 @@ def test_profile_failure_never_aborts_the_run(tmp_path, capsys):
     with mock.patch.object(cli, "build_profile", side_effect=RuntimeError("boom")):
         rc = cli.main(["--local", "--local-data", str(tmp_path / "d"), "--output-dir", str(tmp_path / "o")])
     assert rc == 0 and (tmp_path / "o" / "records.json").exists() and (tmp_path / "o" / "_rejected.json").exists()
-    assert "profile skipped: RuntimeError" in capsys.readouterr().err
+    assert "profile skipped error_type=RuntimeError" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("raw,expected", [
