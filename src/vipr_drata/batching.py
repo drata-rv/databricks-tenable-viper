@@ -60,7 +60,8 @@ def compact(item, keys):
 
 def finding_item(f):
     item = dict(f)
-    cves = item.get("cves") or []
+    cves = [str(c).strip() for c in (item.get("cves") or [])
+            if isinstance(c, (str, int)) and not isinstance(c, bool) and str(c).strip().lower() not in ("", "null", "none")]
     item["cveCount"] = len(cves)
     item["cves"] = cves[:CVE_CAP]
     return compact(item, FINDING_KEYS)

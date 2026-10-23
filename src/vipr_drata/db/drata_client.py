@@ -25,6 +25,13 @@ def dumps(body):
     return json.dumps(body, separators=(",", ":"), default=str)
 
 
+def _as_int(value):
+    try:
+        return int(value) if not isinstance(value, bool) else None
+    except (TypeError, ValueError):
+        return None
+
+
 def chunk_records(records, batch_size=100, max_bytes=MAX_BODY_BYTES):
     batch, size = [], 0
     for r in records:
@@ -145,12 +152,15 @@ class DrataClient:
     def _item_error(item):
         if not isinstance(item, dict):
             return None
-        status, err = item.get("statusCode"), item.get("error")
-        nested = err.get("statusCode") if isinstance(err, dict) else None
-        if not (err or (isinstance(status, int) and status not in (200, 201)) or (isinstance(nested, int) and nested >= 400)):
+        status, err = _as_int(item.get("statusCode")), item.get("error")
+        nested = _as_int(err.get("statusCode")) if isinstance(err, dict) else None
+        text = err.get("message") if isinstance(err, dict) else err
+        text = text if isinstance(text, str) and text else item.get("message")
+        bad_status = status is not None and not 200 <= status < 300
+        if not (bad_status or (nested is not None and nested >= 400) or (isinstance(text, str) and text) or
+                (err and not isinstance(err, (dict, str)))):
             return None
-        msg = (err.get("message") if isinstance(err, dict) else err) or ""
-        return "item status %s: %s" % (nested if isinstance(nested, int) else status, str(msg)[:600])
+        return "item status %s: %s" % (nested if nested is not None else status, str(text or err or "")[:600])
 
     def _item_errors(self, resp, batch):
         try:
@@ -159,6 +169,10 @@ class DrataClient:
             data = None
         if isinstance(data, dict):
             data = next((data[k] for k in WRAPPER_KEYS if isinstance(data.get(k), list)), data)
+        if isinstance(data, dict):
+            msg = self._item_error(data) or (self._item_error(data["data"]) if isinstance(data.get("data"), dict) else None)
+            if msg:
+                return [{"id": rec.get("id"), "error": msg} for rec in batch]
         if not isinstance(data, list):
             if len(batch) > 1:
                 self._unverified.append(1)
@@ -180,6 +194,9 @@ class DrataClient:
                 self._sampled.append(1)
                 progress.log("first Drata response: HTTP %s %s", resp.status_code, str(resp.text)[:600].replace("\n", " "))
             bad = self._item_errors(resp, batch)
+            if bad and len(bad) == len(batch) and "Schema validation failed" in bad[0]["error"] and not self._fatal:
+                self._fatal = "stopped after the first request: " + bad[0]["error"][:300]
+                progress.log("every record in the first request was rejected by the connection schema; not sending the rest")
             return len(batch) - len(bad), bad
         if len(batch) > 1 and not self._fatal and any(err.startswith("HTTP %d" % c) for c in RECORD_ERRORS):
             good, failed = 0, []

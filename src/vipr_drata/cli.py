@@ -310,7 +310,8 @@ def _main(argv):
         print("WARNING: --local --push in session mode replaces the whole resource with synthetic data", file=sys.stderr)
     dc = DrataClient(base_url,
                      drata_api_key(args.drata_prod, args.workspace))
-    _check_schema(dc, os.environ["DRATA_CONNECTION_ID"], os.environ["DRATA_RESOURCE_ID"], records)
+    if _schema_mismatch(dc, os.environ["DRATA_CONNECTION_ID"], os.environ["DRATA_RESOURCE_ID"], records):
+        return 2
     session_id = "vipr-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     conn, res = os.environ["DRATA_CONNECTION_ID"], os.environ["DRATA_RESOURCE_ID"]
     if push_mode == "session":
@@ -342,26 +343,33 @@ def _main(argv):
         print("%d record(s) failed, %d distinct error(s):" % (len(failed), len(by_error)), file=sys.stderr)
         for msg, ids in list(by_error.items())[:3]:
             print("  x%d (e.g. %s): %s" % (len(ids), ids[0], msg), file=sys.stderr)
+        if any("Schema validation failed" in m for m in by_error):
+            print("The Drata connection's schema does not match these records (it was created from an older schema). "
+                  "Create a NEW custom connection from schemas/vipr_unified.schema.json and set DRATA_CONNECTION_ID / "
+                  "DRATA_RESOURCE_ID to it.", file=sys.stderr)
     return 1 if failed else 0
 
 
-def _check_schema(dc, conn, res, records):
+def _schema_mismatch(dc, conn, res, records):
     try:
         schema = dc.resource_schema(conn, res)
         if not isinstance(schema, dict):
-            return
+            print("note: could not read the Drata resource schema; records are checked by Drata on upload", file=sys.stderr)
+            return False
         declared = schema.get("properties")
         required = [k for k in schema.get("required") or [] if isinstance(k, str)]
         missing = sorted({k for k in required for r in records if k not in r})
-        extra = []
-        if isinstance(declared, dict) and schema.get("additionalProperties") is False:
-            extra = sorted({k for r in records for k in r if k not in declared})
-        if missing or extra or (isinstance(declared, dict) and "recordType" not in declared):
-            print("WARNING: the Drata resource schema does not match this tool's records (required but not sent: %s; sent but "
-                  "not in schema: %s). Records will be rejected. Create a NEW custom connection from "
-                  "schemas/vipr_unified.schema.json and use its ids." % (missing[:8] or "none", extra[:8] or "none"), file=sys.stderr)
+        closed = isinstance(declared, dict) and schema.get("additionalProperties") is False
+        extra = sorted({k for r in records for k in r if k not in declared}) if closed else []
+        if missing or extra:
+            print("ABORT: the Drata resource schema does not match this tool's records (required but not sent: %s; sent but "
+                  "not in schema: %s). Drata would reject every record. The connection was created from an older schema: "
+                  "create a NEW custom connection from schemas/vipr_unified.schema.json and set DRATA_CONNECTION_ID / "
+                  "DRATA_RESOURCE_ID to it. Nothing sent." % (missing[:8] or "none", extra[:8] or "none"), file=sys.stderr)
+            return True
     except Exception as e:
         print("schema check skipped: %s" % type(e).__name__, file=sys.stderr)
+    return False
 
 
 def _verify(dc, conn, res, records):
