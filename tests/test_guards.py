@@ -213,13 +213,14 @@ def _listing_client(pages):
 def test_list_records_reads_plain_lists_wrapped_pages_and_totals():
     c, sess = _listing_client([[{"id": "a"}, {"id": "b"}]])
     assert c.list_records(1, 2) == (["a", "b"], None)
-    assert "limit=10&page=1" in sess.get.call_args.args[0]
+    assert "size=3&sortDir=DESC&includeTotalCount=true" in sess.get.call_args.args[0]
     c, _ = _listing_client([{"data": [{"id": "a"}, {"data": {"id": "b"}}], "total": 2}])
     assert c.list_records(1, 2) == (["a", "b"], 2)
-    page = [{"id": str(i)} for i in range(100)]
-    c, sess = _listing_client([{"results": page, "count": 150}, {"results": [{"id": "x"}], "count": 150}])
-    ids, total = c.list_records(1, 2, limit=100, pages=5)
-    assert len(ids) == 101 and total == 150 and sess.get.call_count == 2
+    page = [{"id": str(i)} for i in range(3)]
+    c, sess = _listing_client([{"results": page, "pagination": {"cursor": "a+b=", "totalCount": 4}}, {"results": [{"id": "x"}]}])
+    ids, total = c.list_records(1, 2, size=3, pages=5)
+    assert len(ids) == 4 and total == 4 and sess.get.call_count == 2
+    assert "cursor=a%2Bb%3D" in sess.get.call_args.args[0]
 
 
 @pytest.mark.parametrize("body", ["junk", {"nope": 1}, None])

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
+from urllib.parse import quote
 
 from .. import progress
 
@@ -18,11 +19,29 @@ MAX_RETRY_AFTER = 120.0
 WRAPPER_KEYS = ("data", "results", "items", "records")
 SESSION_PREFIX = "vipr-"
 STALE_SESSION_AFTER = timedelta(minutes=15)
+SESSION_PAGE = 50
+MAX_SESSION_PAGES = 20
+READ_TIMEOUT = (10, 20)
 
 
 # compact JSON: the size guard in batching.py measures these same bytes
 def dumps(body):
     return json.dumps(body, separators=(",", ":"), default=str)
+
+
+def _page_total(data):
+    pg = data.get("pagination") if isinstance(data.get("pagination"), dict) else {}
+    for src in (data, pg):
+        for k in ("total", "totalCount", "count"):
+            if isinstance(src.get(k), int) and not isinstance(src.get(k), bool):
+                return src[k]
+    return None
+
+
+def _page_cursor(data):
+    pg = data.get("pagination") if isinstance(data, dict) else None
+    cursor = pg.get("cursor") if isinstance(pg, dict) else None
+    return cursor if isinstance(cursor, str) and cursor else None
 
 
 def _as_int(value):
@@ -232,18 +251,21 @@ class DrataClient:
         ex.shutdown()
         return ok, failed
 
-    def list_records(self, connection_id, resource_id, limit=10, pages=1):
+    def list_records(self, connection_id, resource_id, size=3, pages=1):
         url = self._base(connection_id, resource_id) + "/records"
-        found, total = [], None
-        for page in range(1, pages + 1):
-            data = self._get("%s?limit=%d&page=%d" % (url, limit, page), timeout=20, retry=False)
+        found, total, cursor = [], None, None
+        for _ in range(pages):
+            query = "size=%d&sortDir=DESC" % size + ("&cursor=" + quote(cursor, safe="") if cursor else "&includeTotalCount=true")
+            data = self._get("%s?%s" % (url, query), timeout=READ_TIMEOUT, retry=False)
+            cursor = None
             if isinstance(data, dict):
-                total = next((data[k] for k in ("total", "totalCount", "count") if isinstance(data.get(k), int)), total)
+                total = _page_total(data) if _page_total(data) is not None else total
+                cursor = _page_cursor(data)
                 data = next((data[k] for k in WRAPPER_KEYS if isinstance(data.get(k), list)), None)
             if not isinstance(data, list):
                 return (found, total) if found else None
             found += [str(i.get("id") or (i.get("data") or {}).get("id")) for i in data if isinstance(i, dict)]
-            if len(data) < limit:
+            if len(data) < size or not cursor:
                 break
         return found, total
 
@@ -266,9 +288,9 @@ class DrataClient:
         return self._push_all(self._base(connection_id, resource_id) + "/records", records, "records (upsert)")
 
     def session_record_count(self, base, session_id):
-        data = self._get("%s/records?sessionId=%s&limit=100" % (base, session_id))
+        data = self._get("%s/records?sessionId=%s&size=1&includeTotalCount=true" % (base, session_id), timeout=READ_TIMEOUT)
         if isinstance(data, dict):
-            total = next((data[k] for k in ("total", "totalCount", "count") if isinstance(data.get(k), int)), None)
+            total = _page_total(data)
             data = next((data[k] for k in WRAPPER_KEYS if isinstance(data.get(k), list)), None)
             if isinstance(data, list):
                 return total if total is not None else len(data)
@@ -310,17 +332,36 @@ class DrataClient:
             return None
         return now - started
 
+    def _all_sessions(self, base):
+        out, cursor = [], None
+        for _ in range(MAX_SESSION_PAGES):
+            query = "sortDir=DESC&size=%d" % SESSION_PAGE + ("&cursor=" + quote(cursor, safe="") if cursor else "")
+            data = self._get("%s/sessions?%s" % (base, query))
+            if data is None and not out:
+                data = self._get(base + "/sessions?sortDir=DESC")
+            if data is None:
+                return out or None
+            cursor = _page_cursor(data) if isinstance(data, dict) else None
+            if isinstance(data, dict):
+                data = next((data[k] for k in WRAPPER_KEYS if isinstance(data.get(k), list)), [])
+            if not isinstance(data, list):
+                return out
+            out += data
+            if not cursor or len(data) == 0:
+                break
+        return out
+
     def _open_sessions(self, base):
-        data = self._get(base + "/sessions?status=IN_PROGRESS")
-        if isinstance(data, dict):
-            data = next((data[k] for k in WRAPPER_KEYS if isinstance(data.get(k), list)), [])
+        data = self._all_sessions(base)
         if data is None:
             return None
-        if not isinstance(data, list):
-            return []
         ids = []
-        progress.log("sessions Drata lists on this resource: %s", ", ".join(
-            "%s=%s" % ((i.get("sessionId") or i.get("id")), i.get("status")) for i in data[:12] if isinstance(i, dict)) or "none")
+        counts = {}
+        for i in data:
+            if isinstance(i, dict):
+                counts[i.get("status")] = counts.get(i.get("status"), 0) + 1
+        progress.log("Drata lists %d session(s) on this resource: %s", len(data),
+                     ", ".join("%s=%s" % kv for kv in sorted(counts.items(), key=str)) or "none")
         for item in data:
             if isinstance(item, dict) and item.get("status") not in (None, "IN_PROGRESS"):
                 continue
@@ -386,9 +427,6 @@ class DrataClient:
             if not failed and len(records) > 1:
                 more_ok, failed = self._push_all(stage, records[1:], "records (staging)")
                 ok += more_ok
-            staged = self.session_record_count(base, session_id) if not failed else None
-            if staged is not None:
-                progress.log("session %s: Drata reports %d staged record(s) (we sent %d)", session_id, staged, len(records))
             action = "complete" if not failed else "cancel"
             progress.log("session %s: %s", session_id, "completing (atomic replace of the dataset)" if action == "complete" else "cancelling because staging had failures")
             done, err = self._post(actions, {"action": action})

@@ -3,6 +3,7 @@ import json
 import os
 import signal
 import sys
+import threading
 from datetime import datetime, timezone
 
 from .db.auth import drata_api_key, get_client_for_env
@@ -373,9 +374,25 @@ def _schema_mismatch(dc, conn, res, records):
 
 
 def _verify(dc, conn, res, records):
-    progress.log("reading the first page (10 records) back from Drata; our records are large, so only a sample is read")
+    progress.log("reading the 3 newest records back from Drata (records are large, so only a sample is read)")
+    box = {}
+
+    def read():
+        try:
+            box["listed"] = dc.list_records(conn, res)
+        except Exception as e:
+            box["error"] = e
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(45)
+    if reader.is_alive():
+        print("verify skipped: Drata did not answer the read-back within 45 s (the push itself was accepted)", file=sys.stderr)
+        return
     try:
-        listed = dc.list_records(conn, res)
+        if "error" in box:
+            raise box["error"]
+        listed = box.get("listed")
         if listed is None:
             print("verify: could not read the records back from Drata (the key may lack read scope)", file=sys.stderr)
             return

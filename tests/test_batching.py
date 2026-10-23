@@ -376,7 +376,7 @@ def test_only_old_sessions_of_this_tool_are_cancelled_before_staging():
     sess.post.return_value = _resp(200, None)
     ok, failed, action = _client(sess).replace_via_session(1, 2, [{"id": "a"}], "mine")
     posted = _posted(sess)
-    assert action == "complete" and sess.get.call_args_list[0].args[0].endswith("/sessions?status=IN_PROGRESS")
+    assert action == "complete" and sess.get.call_args_list[0].args[0].endswith("/sessions?sortDir=DESC&size=50")
     assert posted[0] == ("%s/actions" % old, {"action": "cancel"})
     cancelled = [p for p, body in posted if body == {"action": "cancel"}]
     assert cancelled == ["%s/actions" % old]
@@ -389,7 +389,7 @@ def test_listing_is_retried_and_failures_never_block_the_push():
     sess.get.side_effect = _router(lambda: next(answers))
     sess.post.return_value = _resp(200, None)
     assert _client(sess).replace_via_session(1, 2, [{"id": "a"}], "s")[2] == "complete"
-    assert sum(1 for c in sess.get.call_args_list if "status=IN_PROGRESS" in c.args[0]) == 3
+    assert sum(1 for c in sess.get.call_args_list if "/sessions?sortDir=DESC" in c.args[0]) == 3
     for listing in (_resp(500), _resp(200, "junk"), _resp(200, {"nope": 1}), _resp(404)):
         sess = mock.Mock()
         sess.get.side_effect = _router(listing)
@@ -495,7 +495,7 @@ def test_session_record_count_reads_lists_totals_and_wrappers():
                            ({"total": 4}, 4), ("junk", None), ({"nope": 1}, None)):
         sess.get.return_value = _resp(200, body)
         assert c.session_record_count("http://x/base", "s") == expected
-    assert "records?sessionId=s&limit=100" in sess.get.call_args.args[0]
+    assert "records?sessionId=s&size=1&includeTotalCount=true" in sess.get.call_args.args[0]
 
 
 BLOCKED = '{"statusCode":400,"message":"Another session upload is already in progress for this connection/resource.","code":28022}'
