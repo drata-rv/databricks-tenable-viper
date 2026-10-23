@@ -143,7 +143,7 @@ class DrataClient:
             elif code >= 400:
                 if code not in RECORD_ERRORS:
                     self._fatal = "HTTP %s: %s" % (code, resp.text[:200])
-                progress.log("Drata rejected a request: HTTP %s %s", code, resp.text[:200])
+                progress.log("Drata rejected a request: HTTP %s %s", code, resp.text[:400])
                 return False, "HTTP %s: %s" % (code, resp.text[:200]), None
             else:
                 return True, None, resp
@@ -319,6 +319,8 @@ class DrataClient:
         if not isinstance(data, list):
             return []
         ids = []
+        progress.log("sessions Drata lists on this resource: %s", ", ".join(
+            "%s=%s" % ((i.get("sessionId") or i.get("id")), i.get("status")) for i in data[:12] if isinstance(i, dict)) or "none")
         for item in data:
             if isinstance(item, dict) and item.get("status") not in (None, "IN_PROGRESS"):
                 continue
