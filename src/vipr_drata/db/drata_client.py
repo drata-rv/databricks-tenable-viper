@@ -232,11 +232,11 @@ class DrataClient:
         ex.shutdown()
         return ok, failed
 
-    def list_records(self, connection_id, resource_id, limit=100, pages=5):
+    def list_records(self, connection_id, resource_id, limit=10, pages=1):
         url = self._base(connection_id, resource_id) + "/records"
         found, total = [], None
         for page in range(1, pages + 1):
-            data = self._get("%s?limit=%d&page=%d" % (url, limit, page))
+            data = self._get("%s?limit=%d&page=%d" % (url, limit, page), timeout=20, retry=False)
             if isinstance(data, dict):
                 total = next((data[k] for k in ("total", "totalCount", "count") if isinstance(data.get(k), int)), total)
                 data = next((data[k] for k in WRAPPER_KEYS if isinstance(data.get(k), list)), None)
@@ -275,14 +275,14 @@ class DrataClient:
             return total
         return len(data) if isinstance(data, list) else None
 
-    def _get(self, url):
+    def _get(self, url, timeout=30, retry=True):
         errors = limits = 0
         while True:
             try:
-                resp = self._session().get(url, timeout=30)
+                resp = self._session().get(url, timeout=timeout)
             except requests.RequestException:
                 errors += 1
-                if errors > self.max_errors:
+                if errors > self.max_errors or not retry:
                     return None
                 self._sleep(self.backoff * errors)
                 continue

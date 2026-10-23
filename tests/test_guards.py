@@ -213,12 +213,12 @@ def _listing_client(pages):
 def test_list_records_reads_plain_lists_wrapped_pages_and_totals():
     c, sess = _listing_client([[{"id": "a"}, {"id": "b"}]])
     assert c.list_records(1, 2) == (["a", "b"], None)
-    assert "limit=100&page=1" in sess.get.call_args.args[0]
+    assert "limit=10&page=1" in sess.get.call_args.args[0]
     c, _ = _listing_client([{"data": [{"id": "a"}, {"data": {"id": "b"}}], "total": 2}])
     assert c.list_records(1, 2) == (["a", "b"], 2)
     page = [{"id": str(i)} for i in range(100)]
     c, sess = _listing_client([{"results": page, "count": 150}, {"results": [{"id": "x"}], "count": 150}])
-    ids, total = c.list_records(1, 2)
+    ids, total = c.list_records(1, 2, limit=100, pages=5)
     assert len(ids) == 101 and total == 150 and sess.get.call_count == 2
 
 
@@ -336,5 +336,5 @@ def test_readback_does_not_cry_wolf_when_it_only_saw_part_of_a_large_resource(mo
     legacy = ["asset:old-%d" % i for i in range(500)]
     assert _push_with_listing(monkeypatch, tmp_path, (legacy, 190000)) == 0
     err = capsys.readouterr().err
-    assert "checked only the first 500 of 190000 records" in err and "WARNING: none of the submitted" not in err
+    assert "only a 500-record sample was read" in err and "WARNING: none of the submitted" not in err
     assert "old per-finding records (500+" in err

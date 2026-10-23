@@ -373,7 +373,7 @@ def _schema_mismatch(dc, conn, res, records):
 
 
 def _verify(dc, conn, res, records):
-    progress.log("reading records back from Drata to confirm they landed")
+    progress.log("reading the first page (10 records) back from Drata; our records are large, so only a sample is read")
     try:
         listed = dc.list_records(conn, res)
         if listed is None:
@@ -388,9 +388,9 @@ def _verify(dc, conn, res, records):
             print("note: Drata still holds old per-finding records (%d+, e.g. %s). They bury the new records in the Manage tab; "
                   "run once: vipr-drata --push-mode session (removes them), or use a new custom connection" %
                   (len(legacy), legacy[0][:60]), file=sys.stderr)
-        if not seen and total is not None and total > len(ids):
-            print("note: checked only the first %d of %d records Drata holds, so this cannot confirm ours landed; open the "
-                  "connection's Manage tab and search for 'summary'" % (len(ids), total), file=sys.stderr)
+        if not seen and (total is None or total > len(ids)):
+            print("note: only a %d-record sample was read, so this cannot confirm ours landed (Drata accepted every record "
+                  "in the push); open the connection's Manage tab and search for 'summary'" % len(ids), file=sys.stderr)
         elif not seen:
             print("WARNING: none of the submitted records are visible in Drata. Check that DRATA_CONNECTION_ID and "
                   "DRATA_RESOURCE_ID are the connection you are viewing, and that DRATA_API_KEY belongs to the same "
