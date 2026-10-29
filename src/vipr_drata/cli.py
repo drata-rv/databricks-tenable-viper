@@ -12,8 +12,8 @@ from .db.queries import is_true
 from .db.secrets import ConfigError
 from .etl.extract import active_specs, extract_all, merge
 from .etl.local import load_local_tables
-from .batching import (DEFAULT_ASSET_BUCKETS, MAX_BUCKETS, MAX_RECORD_BYTES_LIMIT, batch_time, build_records,
-                       parse_lane_buckets, size_of)
+from .batching import (DEFAULT_ASSET_PARTITIONS, MAX_PARTITIONS, MAX_RECORD_BYTES_LIMIT, source_as_of, build_records,
+                       parse_finding_partitions, size_of)
 from .etl.sample_data import write_scale_data, write_sample_data
 from . import __version__, log
 from .profile import build_profile, summary
@@ -99,15 +99,15 @@ def build_parser():
                    help="substring of the tool_severity key compared with Vipr severity (default tenable)")
     p.add_argument("--scanner-severity-map", default=os.getenv("SCANNER_SEVERITY_MAP", ""),
                    help='JSON map of raw tool values to info|low|medium|high|critical, e.g. {"1":"low","2":"medium"}')
-    p.add_argument("--finding-lane-buckets", default=os.getenv("FINDING_LANE_BUCKETS", ""),
-                   help='JSON minimum batches per severity lane, default {"critical":1,"high":2,"medium":4,"low":4,"info":1,"unknown":1}; '
-                        "grows automatically in session mode, exact in upsert mode")
-    p.add_argument("--asset-buckets", type=int, default=_env_number("ASSET_BUCKETS", DEFAULT_ASSET_BUCKETS, int),
-                   help="minimum asset batch records (default 4); grows automatically in session mode")
+    p.add_argument("--finding-partitions", default=os.getenv("FINDING_PARTITIONS", ""),
+                   help='JSON minimum partitions per severity, default {"critical":1,"high":2,"medium":4,"low":4,"info":1,"unknown":1}; '
+                        "grows automatically to fit MAX_RECORD_BYTES")
+    p.add_argument("--asset-partitions", type=int, default=_env_number("ASSET_PARTITIONS", DEFAULT_ASSET_PARTITIONS, int),
+                   help="minimum asset partitions (default 4); grows automatically to fit MAX_RECORD_BYTES")
     p.add_argument("--closed-lookback-days", type=int, default=_env_number("CLOSED_LOOKBACK_DAYS", 90, int),
                    help="closed findings older than this are left out (default 90)")
     p.add_argument("--max-source-age-days", type=int, default=_env_number("MAX_SOURCE_AGE_DAYS", 3, int),
-                   help="summary sourceFresh is false when the oldest source batch is older (default 3)")
+                   help="sourceFresh is false when the oldest source table is older (default 3)")
     p.add_argument("--max-record-bytes", type=int, default=_env_number("MAX_RECORD_BYTES", 4000000, int),
                    help="abort before pushing if any record is larger (max 4500000; Drata limit is 5 MB)")
     p.add_argument("--min-findings", type=int, default=_env_number("MIN_FINDINGS", 1, int),
@@ -181,9 +181,9 @@ def _main(argv):
     push_mode = args.push_mode or _env_str("DRATA_PUSH_MODE", "upsert")
     if push_mode not in ("upsert", "session"):
         p.error("invalid push mode %r (DRATA_PUSH_MODE): use upsert or session" % push_mode)
-    lane_buckets = parse_lane_buckets(args.finding_lane_buckets)
+    finding_partitions = parse_finding_partitions(args.finding_partitions)
     for name, ok, hint in (
-            ("--asset-buckets", 1 <= args.asset_buckets <= MAX_BUCKETS, "1-%d" % MAX_BUCKETS),
+            ("--asset-partitions", 1 <= args.asset_partitions <= MAX_PARTITIONS, "1-%d" % MAX_PARTITIONS),
             ("--closed-lookback-days", 1 <= args.closed_lookback_days <= 36500, "1-36500"),
             ("--max-source-age-days", 0 <= args.max_source_age_days <= 36500, "0-36500"),
             ("--max-record-bytes", 100_000 <= args.max_record_bytes <= MAX_RECORD_BYTES_LIMIT, "100000-%d" % MAX_RECORD_BYTES_LIMIT),
@@ -253,16 +253,16 @@ def _main(argv):
                                                scanner_tool=args.scanner_tool, scanner_scale=scale)
     log.info("transform", "derive.complete", findings=len(findings), assets=len(scans), rejected=len(rejected))
     now = datetime.now(timezone.utc)
-    source_dates = {label: batch_time(tables.get(label, [])) for label in ("findings", "assets")}
+    source_dates = {label: source_as_of(tables.get(label, [])) for label in ("findings", "assets")}
     if tables.get("tenable_assets") is not None:
-        source_dates["tenable_assets"] = batch_time(tables["tenable_assets"])
+        source_dates["tenable_assets"] = source_as_of(tables["tenable_assets"])
     records = build_records(
-        findings, scans, now=now, lane_buckets=lane_buckets, asset_buckets=args.asset_buckets,
+        findings, scans, now=now, finding_partitions=finding_partitions, asset_partitions=args.asset_partitions,
         closed_lookback_days=args.closed_lookback_days, max_source_age_days=args.max_source_age_days,
         max_record_bytes=args.max_record_bytes, rejected=len(rejected), source_dates=source_dates,
-        grow_buckets=True)
+        auto_size=True)
 
-    log.info("batch", "records.built", records=len(records), output=os.path.join(args.output_dir, "records.json"))
+    log.info("records", "built", records=len(records), output=os.path.join(args.output_dir, "records.json"))
     _dump(os.path.join(args.output_dir, "records.json"), records, indent=None)
     try:
         profile = build_profile(tables, joined, findings, scans)
@@ -271,12 +271,12 @@ def _main(argv):
     except Exception as e:
         log.warn("profile", "skipped", error_type=type(e).__name__)
     _dump(os.path.join(args.output_dir, "_rejected.json"), rejected)
-    log.info("batch", "summary", findings=len(findings), assets=len(scans), rejected=len(rejected), records=len(records),
+    log.info("records", "summary", findings=len(findings), assets=len(scans), rejected=len(rejected), records=len(records),
              largest_record_mb=log.mb(max(size_of(r) for r in records)), total_mb=log.mb(sum(size_of(r) for r in records)))
     if rejected:
         log.warn("transform", "rejected.sample", count=len(rejected), sample=["%s:%s" % (r["resource"], r["reason"]) for r in rejected[:5]])
-    lane_counts = {r["severityLane"]: r["bucketCount"] for r in records if r["recordType"] == "findingBatch"}
-    log.info("batch", "buckets", **lane_counts, assets=records[0]["assetBuckets"])
+    partition_counts = {r["severity"]: r["partitionCount"] for r in records if r["recordType"] == "findingPartition"}
+    log.info("records", "partitions", **partition_counts, assets=records[0]["assetPartitionCount"])
 
     # count what is actually submitted: an empty array makes every array test pass
     kept_findings, kept_assets = records[0]["findingCount"], records[0]["assetCount"]

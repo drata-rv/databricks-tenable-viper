@@ -6,7 +6,7 @@
     },
     "recordType": {
       "type": "string",
-      "description": "summary | findingBatch | assetBatch"
+      "description": "scanSummary | findingPartition | assetPartition"
     },
     "displayName": {
       "type": "string"
@@ -17,13 +17,13 @@
         "null"
       ]
     },
-    "sourceBatchDate": {
+    "sourceAsOf": {
       "type": [
         "string",
         "null"
       ]
     },
-    "sourceBatchAgeDays": {
+    "sourceAgeDays": {
       "type": [
         "integer",
         "null"
@@ -35,13 +35,13 @@
         "null"
       ]
     },
-    "bucket": {
+    "partition": {
       "type": [
         "integer",
         "null"
       ]
     },
-    "bucketCount": {
+    "partitionCount": {
       "type": [
         "integer",
         "null"
@@ -53,13 +53,13 @@
         "null"
       ]
     },
-    "findingBuckets": {
+    "findingPartitionCount": {
       "type": [
         "integer",
         "null"
       ]
     },
-    "assetBuckets": {
+    "assetPartitionCount": {
       "type": [
         "integer",
         "null"
@@ -107,7 +107,7 @@
         "null"
       ]
     },
-    "closedExcludedCount": {
+    "closedFindingsExcludedCount": {
       "type": [
         "integer",
         "null"
@@ -125,19 +125,19 @@
         "null"
       ]
     },
-    "assetsViprStaleCount": {
+    "staleAssetCount": {
       "type": [
         "integer",
         "null"
       ]
     },
-    "assetsTenableStaleCount": {
+    "tenableStaleAssetCount": {
       "type": [
         "integer",
         "null"
       ]
     },
-    "assetsTenableUnmatchedCount": {
+    "tenableUnmatchedAssetCount": {
       "type": [
         "integer",
         "null"
@@ -366,26 +366,26 @@
         "additionalProperties": true
       }
     },
-    "severityLane": {
+    "severity": {
       "type": [
         "string",
         "null"
       ],
       "description": "critical | high | medium | low | info | unknown"
     },
-    "findingsBatchDate": {
+    "findingsSourceAsOf": {
       "type": [
         "string",
         "null"
       ]
     },
-    "assetsBatchDate": {
+    "assetsSourceAsOf": {
       "type": [
         "string",
         "null"
       ]
     },
-    "tenableBatchDate": {
+    "tenableSourceAsOf": {
       "type": [
         "string",
         "null"

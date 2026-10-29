@@ -20,9 +20,9 @@ variables:
     default: ""
   push_mode:
     default: upsert
-  finding_lane_buckets:
+  finding_partitions:
     default: ""
-  asset_buckets:
+  asset_partitions:
     default: "4"
   closed_lookback_days:
     default: "90"
@@ -82,9 +82,9 @@ resources:
               - --env
               - DRATA_PUSH_MODE=${var.push_mode}
               - --env
-              - FINDING_LANE_BUCKETS=${var.finding_lane_buckets}
+              - FINDING_PARTITIONS=${var.finding_partitions}
               - --env
-              - ASSET_BUCKETS=${var.asset_buckets}
+              - ASSET_PARTITIONS=${var.asset_partitions}
               - --env
               - CLOSED_LOOKBACK_DAYS=${var.closed_lookback_days}
               - --env

@@ -160,7 +160,7 @@ def test_bundle_passes_every_job_setting_the_code_reads():
     env = (ROOT / ".env.example").read_text()
     passed = set(re.findall(r"^\s+- ([A-Z][A-Z0-9_]+)=\$\{var\.", yml, flags=re.M))
     assert {"SCANNER_TOOL", "SCANNER_SEVERITY_MAP", "DRATA_PUSH_MODE", "DRATA_CONNECTION_ID", "DRATA_RESOURCE_ID",
-            "VIPR_FINDINGS_TABLE", "VIPR_ASSETS_TABLE", "TENABLE_ASSETS_TABLE", "FINDING_LANE_BUCKETS", "ASSET_BUCKETS",
+            "VIPR_FINDINGS_TABLE", "VIPR_ASSETS_TABLE", "TENABLE_ASSETS_TABLE", "FINDING_PARTITIONS", "ASSET_PARTITIONS",
             "CLOSED_LOOKBACK_DAYS", "MAX_SOURCE_AGE_DAYS", "MAX_RECORD_BYTES", "MIN_FINDINGS", "MIN_ASSETS",
             "SCAN_STALE_DAYS", "MAX_REJECT_RATIO", "DRATA_PROD"} <= passed
     assert all(re.search(r"^%s=" % k, env, flags=re.M) for k in passed)
@@ -182,17 +182,17 @@ def test_bundle_defaults_match_the_code_defaults():
     yml = (ROOT / "databricks.yml").read_text()
     default = lambda name: re.search(r"^  %s:\n    default: \"?([^\"\n]*)\"?$" % name, yml, flags=re.M).group(1)
     args = cli.build_parser().parse_args([])
-    assert default("asset_buckets") == str(args.asset_buckets)
+    assert default("asset_partitions") == str(args.asset_partitions)
     assert default("closed_lookback_days") == str(args.closed_lookback_days)
     assert default("max_source_age_days") == str(args.max_source_age_days)
     assert default("max_record_bytes") == str(args.max_record_bytes)
     assert default("min_findings") == str(args.min_findings) and default("min_assets") == str(args.min_assets)
-    assert default("scanner_tool") == args.scanner_tool and default("finding_lane_buckets") == args.finding_lane_buckets == ""
+    assert default("scanner_tool") == args.scanner_tool and default("finding_partitions") == args.finding_partitions == ""
     assert default("push_mode") == "upsert" and args.push_mode is None
     assert default("scan_stale_days") == str(args.stale_days) and default("max_reject_ratio") == ""
     assert re.search(r"^      max_concurrent_runs: 1$", yml, flags=re.M)
     env = (ROOT / ".env.example").read_text()
-    for key, value in (("ASSET_BUCKETS", args.asset_buckets), ("CLOSED_LOOKBACK_DAYS", args.closed_lookback_days),
+    for key, value in (("ASSET_PARTITIONS", args.asset_partitions), ("CLOSED_LOOKBACK_DAYS", args.closed_lookback_days),
                        ("MAX_SOURCE_AGE_DAYS", args.max_source_age_days), ("MAX_RECORD_BYTES", args.max_record_bytes),
                        ("MIN_FINDINGS", args.min_findings), ("MIN_ASSETS", args.min_assets), ("DRATA_PUSH_MODE", "upsert")):
         assert re.search(r"^%s=%s$" % (key, value), env, flags=re.M), key

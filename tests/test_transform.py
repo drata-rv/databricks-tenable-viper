@@ -9,12 +9,12 @@ import requests
 
 from vipr_drata.db.queries import is_true, rows_to_records
 from helpers import flatten
-from vipr_drata.batching import LANES, build_records
+from vipr_drata.batching import SEVERITIES, build_records
 from vipr_drata.transform import (build_payloads, extract_asset_features, extract_finding_features,
                                   index_tenable_assets, match_tenable, scanner_severity)
 
 NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
-LB = {lane: 1 for lane in LANES}
+PARTITIONS = {severity: 1 for severity in SEVERITIES}
 
 
 def finding(**kw):
@@ -69,15 +69,15 @@ def _strict():
     asset = s["properties"]["assets"]["items"]
     asset["properties"]["tenableMatch"] = {"enum": ["matched", "none", "ambiguous", "not_configured", "no_data", None]}
     asset["required"] = ["id", "isActive", "viprLastSeenStale"]
-    s["properties"]["recordType"] = {"enum": ["summary", "findingBatch", "assetBatch"]}
-    s["properties"]["severityLane"] = {"enum": list(LANES) + [None]}
+    s["properties"]["recordType"] = {"enum": ["scanSummary", "findingPartition", "assetPartition"]}
+    s["properties"]["severity"] = {"enum": list(SEVERITIES) + [None]}
     s["allOf"] = [
-        {"if": {"properties": {"recordType": {"const": "summary"}}, "required": ["recordType"]},
+        {"if": {"properties": {"recordType": {"const": "scanSummary"}}, "required": ["recordType"]},
          "then": {"required": ["generatedAt", "sourceFresh", "openFindingCount", "openSlaBreachedCount", "rejectedCount"]}},
-        {"if": {"properties": {"recordType": {"const": "findingBatch"}}, "required": ["recordType"]},
-         "then": {"required": ["findings", "bucket", "bucketCount", "itemCount", "severityLane"]}},
-        {"if": {"properties": {"recordType": {"const": "assetBatch"}}, "required": ["recordType"]},
-         "then": {"required": ["assets", "bucket", "bucketCount", "itemCount"]}},
+        {"if": {"properties": {"recordType": {"const": "findingPartition"}}, "required": ["recordType"]},
+         "then": {"required": ["findings", "partition", "partitionCount", "itemCount", "severity"]}},
+        {"if": {"properties": {"recordType": {"const": "assetPartition"}}, "required": ["recordType"]},
+         "then": {"required": ["assets", "partition", "partitionCount", "itemCount"]}},
     ]
     return s
 
@@ -93,13 +93,13 @@ def test_shipped_schema_is_plain_drata_subset():
     assert keys(_schema()) <= {"type", "properties", "required", "additionalProperties", "items", "description"}
 
 
-def test_batch_records_match_shipped_and_strict_schema():
+def test_partition_records_match_shipped_and_strict_schema():
     fs, sc, _ = build_payloads(
         [{"finding": finding(open_cves='["CVE-2026-1"]'), "assets": [{"silk_id": "a1", "name": "h"}]},
          {"finding": finding(silk_id="f2", tool_severity="", open_cves=None), "assets": []}],
         [{"silk_id": "a1", "last_seen": "2026-09-30 00:00:00", "is_active": "true", "open_findings_count": "3"},
          {"silk_id": "a2", "is_active": "false"}], 7, NOW)
-    records = build_records(fs, sc, now=NOW, lane_buckets=LB, asset_buckets=2)
+    records = build_records(fs, sc, now=NOW, finding_partitions=PARTITIONS, asset_partitions=2)
     plain, strict = jsonschema.Draft202012Validator(_schema()), jsonschema.Draft202012Validator(_strict())
     for rec in records:
         plain.validate(rec)
@@ -112,7 +112,7 @@ def test_batch_records_match_shipped_and_strict_schema():
 def test_same_source_id_in_both_tables_is_fine_because_arrays_are_separate():
     fs, sc, _ = build_payloads([{"finding": finding(silk_id="x"), "assets": []}],
                                [{"silk_id": "x", "is_active": "true"}], 7, NOW)
-    flat = flatten(build_records(fs, sc, now=NOW, lane_buckets=LB, asset_buckets=2))
+    flat = flatten(build_records(fs, sc, now=NOW, finding_partitions=PARTITIONS, asset_partitions=2))
     assert "x" in flat["findings"] and "x" in flat["assets"]
 
 
@@ -126,12 +126,12 @@ def _pick(recs, kind, field=None):
     (("assets", 0, "tenableMatch"), "maybe"),
     (("findings", 0, "cveCount"), "3"),
     (("itemCount",), "many"),
-    (("severityLane",), "urgent"),
+    (("severity",), "urgent"),
 ])
 def test_unified_schema_rejects_bad_records(path, bad):
     fs, sc, _ = build_payloads([{"finding": finding(), "assets": []}], [{"silk_id": "a1", "is_active": "true"}], 7, NOW)
-    recs = build_records(fs, sc, now=NOW, lane_buckets=LB, asset_buckets=1)
-    rec = _pick(recs, "assetBatch", "assets") if path[0] == "assets" else _pick(recs, "findingBatch", "findings")
+    recs = build_records(fs, sc, now=NOW, finding_partitions=PARTITIONS, asset_partitions=1)
+    rec = _pick(recs, "assetPartition", "assets") if path[0] == "assets" else _pick(recs, "findingPartition", "findings")
     jsonschema.Draft202012Validator(_strict()).validate(rec)
     node = rec
     for p in path[:-1]:
@@ -143,10 +143,10 @@ def test_unified_schema_rejects_bad_records(path, bad):
 
 def test_strict_schema_requires_type_specific_fields():
     fs, sc, _ = build_payloads([{"finding": finding(), "assets": []}], [{"silk_id": "a1", "is_active": "true"}], 7, NOW)
-    recs = build_records(fs, sc, now=NOW, lane_buckets=LB, asset_buckets=1, source_dates={"findings": NOW, "assets": NOW})
+    recs = build_records(fs, sc, now=NOW, finding_partitions=PARTITIONS, asset_partitions=1, source_dates={"findings": NOW, "assets": NOW})
     v = jsonschema.Draft202012Validator(_strict())
-    for rec, key in ((recs[0], "sourceFresh"), (_pick(recs, "findingBatch"), "findings"), (_pick(recs, "findingBatch"), "severityLane"),
-                     (_pick(recs, "assetBatch"), "assets")):
+    for rec, key in ((recs[0], "sourceFresh"), (_pick(recs, "findingPartition"), "findings"), (_pick(recs, "findingPartition"), "severity"),
+                     (_pick(recs, "assetPartition"), "assets")):
         v.validate(rec)
         with pytest.raises(jsonschema.ValidationError):
             v.validate({k: x for k, x in rec.items() if k != key})

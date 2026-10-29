@@ -8,12 +8,12 @@ Each run submits a small set of records (about 20 for small data, under 100 at 1
 | Record id | `recordType` | Content |
 |---|---|---|
 | `summary` | `summary` | counts, `generatedAt`, `sourceFresh`, per-table batch dates, `rejectedCount` |
-| `findings-<lane>-000` ... | `findingBatch` | `severityLane` + `findings[]`, one item per finding |
-| `assets-000` ... | `assetBatch` | `assets[]`, one item per asset |
+| `findings-<lane>-000` ... | `findingPartition` | `severity` + `findings[]`, one item per finding |
+| `assets-000` ... | `assetPartition` | `assets[]`, one item per asset |
 
 Findings are grouped by Vipr severity lane (`critical high medium low info unknown`), then spread over batches by a stable hash of the finding id, so an item stays in the same record. Drata scores, lists and excludes per record, so a lane makes a failing record meaningful and lets tests target critical/high SLAs. Empty batches are still sent. Closed findings older than `CLOSED_LOOKBACK_DAYS` (90) are left out.
 
-Batch counts: `FINDING_LANE_BUCKETS` (default `{"critical":1,"high":2,"medium":4,"low":4,"info":1,"unknown":1}`) and `ASSET_BUCKETS` (4) are minimums. They grow automatically in both push modes, in powers of two (max 256 per lane), so every record stays near `MAX_RECORD_BYTES`/2 (2 MB); nothing needs tuning. Each run prints the effective counts; when a lane sits near a power-of-two boundary, pin `FINDING_LANE_BUCKETS` to the printed numbers so record ids stop moving between nights.
+Batch counts: `FINDING_PARTITIONS` (default `{"critical":1,"high":2,"medium":4,"low":4,"info":1,"unknown":1}`) and `ASSET_PARTITIONS` (4) are minimums. They grow automatically in both push modes, in powers of two (max 256 per lane), so every record stays near `MAX_RECORD_BYTES`/2 (2 MB); nothing needs tuning. Each run prints the effective counts; when a lane sits near a power-of-two boundary, pin `FINDING_PARTITIONS` to the printed numbers so record ids stop moving between nights.
 
 Default push mode is `upsert`: fixed record ids are updated in place, nothing is deleted, no Drata session state is involved. `--push-mode session` stages all records, then atomically replace the dataset. Records not staged (old per-finding records, orphaned batches) are deleted. Any failure, including a failed `complete`, SIGINT or SIGTERM, cancels the session and leaves the previous data. Sessions of this tool older than 2 hours that were left `IN_PROGRESS` by a killed run are cancelled first; other sessions are never touched. The bundle sets `max_concurrent_runs: 1`. `--push-mode upsert` only updates and never deletes, so if batch counts shrink later the higher-numbered records keep stale items (use session mode).
 
@@ -44,7 +44,7 @@ vipr-drata --push-mode session        # atomic replace; deletes records not in t
 ```
 Output in `./output`: `_run.log` (every log line of the run, also with `--quiet`), `records.json` (exactly what is submitted), `_rejected.json`, `_profile.json` (`_failed.json` on push errors).
 `_profile.json` explains null fields: `raw_tool_severity` (keys/values seen, `vipr_severity_by_tool_value`), asset join outcomes, per-column null counts.
-Tunables (env vars, blank = default; see `.env.example`; all reach the Databricks job): `FINDING_LANE_BUCKETS` (lane minimums, 1-256 each), `ASSET_BUCKETS` (4, 1-256), `CLOSED_LOOKBACK_DAYS` (90), `MAX_SOURCE_AGE_DAYS` (3), `MAX_RECORD_BYTES` (4000000, 100000-4500000), `MIN_FINDINGS` / `MIN_ASSETS` (1), `MAX_REJECT_RATIO` (0.05; 0-1; off with `--local`), `SCAN_STALE_DAYS` (7).
+Tunables (env vars, blank = default; see `.env.example`; all reach the Databricks job): `FINDING_PARTITIONS` (lane minimums, 1-256 each), `ASSET_PARTITIONS` (4, 1-256), `CLOSED_LOOKBACK_DAYS` (90), `MAX_SOURCE_AGE_DAYS` (3), `MAX_RECORD_BYTES` (4000000, 100000-4500000), `MIN_FINDINGS` / `MIN_ASSETS` (1), `MAX_REJECT_RATIO` (0.05; 0-1; off with `--local`), `SCAN_STALE_DAYS` (7).
 
 ## Drata
 1. Create one CUSTOM connection with `schemas/vipr_unified.schema.json`, display name key `displayName`.
@@ -53,9 +53,9 @@ Tunables (env vars, blank = default; see `.env.example`; all reach the Databrick
 
 Custom tests (Advanced editor). SLA for critical and high findings: filtering criteria, Inclusion:
 ```json
-{"all":[{"fact":"recordType","operator":"equal","value":"findingBatch"},
-        {"any":[{"fact":"severityLane","operator":"equal","value":"critical"},
-                {"fact":"severityLane","operator":"equal","value":"high"}]}]}
+{"all":[{"fact":"recordType","operator":"equal","value":"findingPartition"},
+        {"any":[{"fact":"severity","operator":"equal","value":"critical"},
+                {"fact":"severity","operator":"equal","value":"high"}]}]}
 ```
 Condition (every open finding within SLA):
 ```json

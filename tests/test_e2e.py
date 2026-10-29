@@ -63,8 +63,8 @@ def test_push_defaults_to_one_atomic_session_with_the_fixed_record_set(monkeypat
     (call,) = DC.return_value.replace_via_session.call_args_list
     assert call.args[:2] == (CONN, RES)
     ids = [r["id"] for r in call.args[2]]
-    assert ids[0] == "summary" and len(ids) == 1 + 13 + 4 and len(set(ids)) == len(ids)
-    assert "findings-medium-003" in ids and "assets-003" in ids
+    assert ids[0] == "vipr-summary" and len(ids) == 1 + 13 + 4 and len(set(ids)) == len(ids)
+    assert "vipr-findings-medium-004" in ids and "vipr-assets-004" in ids
     assert "drata target tenant=sandbox push_mode=session" in capsys.readouterr().out
 
 
@@ -158,13 +158,13 @@ def test_a_stale_findings_table_is_not_hidden_by_a_fresh_assets_table(monkeypatc
             mock.patch("vipr_drata.etl.extract.run_sql", lambda c, w, sql: old if "FROM c.s.t_vipr_all_findings" in sql else fresh):
         assert cli.main(args + ["--dry-run"]) == 0
     s = flatten(json.load(open(tmp_path / "records.json")))["summary"]
-    assert s["sourceFresh"] is False and s["findingsBatchDate"].startswith("2020-01-01T03") and s["sourceBatchAgeDays"] > 1000
+    assert s["sourceFresh"] is False and s["findingsSourceAsOf"].startswith("2020-01-01T03") and s["sourceAgeDays"] > 1000
 
 
-@pytest.mark.parametrize("flags", [["--asset-buckets", "0"], ["--asset-buckets", "257"], ["--closed-lookback-days", "0"],
+@pytest.mark.parametrize("flags", [["--asset-partitions", "0"], ["--asset-partitions", "257"], ["--closed-lookback-days", "0"],
                                    ["--max-record-bytes", "5000000"], ["--max-record-bytes", "99999"],
                                    ["--max-source-age-days", "-1"], ["--min-findings", "-1"], ["--stale-days", "-1"],
-                                   ["--finding-lane-buckets", "{\"high\": 0}"], ["--finding-lane-buckets", "x"]])
+                                   ["--finding-partitions", "{\"high\": 0}"], ["--finding-partitions", "x"]])
 def test_invalid_sizing_settings_exit_2(monkeypatch, tmp_path, flags):
     args = _env(monkeypatch, tmp_path)
     with mock.patch.object(cli, "get_client_for_env"), mock.patch("vipr_drata.etl.extract.run_sql", fake_run_sql):
@@ -177,16 +177,16 @@ def test_invalid_sizing_settings_exit_2(monkeypatch, tmp_path, flags):
 
 def test_sizing_settings_reach_the_records(monkeypatch, tmp_path):
     args = _env(monkeypatch, tmp_path)
-    monkeypatch.setenv("ASSET_BUCKETS", "3")
-    monkeypatch.setenv("FINDING_LANE_BUCKETS", '{"low": 2, "high": 1, "medium": 1, "critical": 1, "info": 1, "unknown": 1}')
+    monkeypatch.setenv("ASSET_PARTITIONS", "3")
+    monkeypatch.setenv("FINDING_PARTITIONS", '{"low": 2, "high": 1, "medium": 1, "critical": 1, "info": 1, "unknown": 1}')
     monkeypatch.setenv("MAX_SOURCE_AGE_DAYS", "36500")
     with mock.patch.object(cli, "get_client_for_env"), mock.patch("vipr_drata.etl.extract.run_sql", fake_run_sql):
         assert cli.main(args + ["--dry-run"]) == 0
     recs = json.load(open(tmp_path / "records.json"))
-    assert [r["id"] for r in recs] == ["summary", "findings-critical-000", "findings-high-000", "findings-medium-000",
-                                       "findings-low-000", "findings-low-001", "findings-info-000", "findings-unknown-000",
-                                       "assets-000", "assets-001", "assets-002"]
-    assert recs[0]["assetBuckets"] == 3 and recs[0]["sourceFresh"] is None
+    assert [r["id"] for r in recs] == ["vipr-summary", "vipr-findings-critical-001", "vipr-findings-high-001", "vipr-findings-medium-001",
+                                       "vipr-findings-low-001", "vipr-findings-low-002", "vipr-findings-info-001", "vipr-findings-unknown-001",
+                                       "vipr-assets-001", "vipr-assets-002", "vipr-assets-003"]
+    assert recs[0]["assetPartitionCount"] == 3 and recs[0]["sourceFresh"] is None
     monkeypatch.setenv("CLOSED_LOOKBACK_DAYS", "x")
     assert cli.main(args + ["--dry-run"]) == 2
 
@@ -280,8 +280,8 @@ def test_local_mode_runs_without_databricks(tmp_path):
     assert {(r["resource"], r["reason"]) for r in rej} == {
         ("findings", "missing silk_id"), ("assets", "conflicting duplicate asset id in latest batch")}
     assert flat["summary"]["rejectedCount"] == 3 and flat["summary"]["sourceFresh"] is True
-    lanes = {r["severityLane"] for r in flat["batches"]["findingBatch"] if r["itemCount"]}
-    assert lanes == {"critical", "high", "medium", "low"}
+    severities = {r["severity"] for r in flat["partitions"]["findingPartition"] if r["itemCount"]}
+    assert severities == {"critical", "high", "medium", "low"}
 
 
 def test_local_regenerates_when_dir_empty_and_rejects_prod(monkeypatch, tmp_path):

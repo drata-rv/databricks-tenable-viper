@@ -7,7 +7,7 @@ import pytest
 from helpers import flatten
 
 from vipr_drata import cli
-from vipr_drata.batching import MAX_BUCKETS, batch_time, build_records, finding_item, size_of
+from vipr_drata.batching import MAX_PARTITIONS, source_as_of, build_records, finding_item, size_of
 from vipr_drata.db.secrets import ConfigError
 
 NOW = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
@@ -26,13 +26,13 @@ def local(tmp_path, *extra, rows=0):
 
 
 @pytest.mark.parametrize("mode", ["session", "upsert"])
-def test_cli_sizes_its_own_batches_in_either_push_mode(tmp_path, capsys, mode):
+def test_cli_sizes_its_own_partitions_in_either_push_mode(tmp_path, capsys, mode):
     assert local(tmp_path, "--max-record-bytes", "150000", "--push-mode", mode, rows=20000) == 0
     recs = json.load(open(tmp_path / "o" / "records.json"))
-    lanes = {r["severityLane"]: r["bucketCount"] for r in recs if r["recordType"] == "findingBatch"}
-    assert max(lanes.values()) > 4 and recs[0]["assetBuckets"] > 4
+    severities = {r["severity"]: r["partitionCount"] for r in recs if r["recordType"] == "findingPartition"}
+    assert max(severities.values()) > 4 and recs[0]["assetPartitionCount"] > 4
     assert max(size_of(r) for r in recs) < 150_000
-    assert "batch buckets critical=" in capsys.readouterr().out
+    assert "records partitions critical=" in capsys.readouterr().out
 
 
 def test_an_old_env_with_upsert_and_default_sizes_no_longer_aborts_on_real_volume(monkeypatch, tmp_path):
@@ -42,17 +42,17 @@ def test_an_old_env_with_upsert_and_default_sizes_no_longer_aborts_on_real_volum
     assert max(size_of(r) for r in recs) < 2_500_000 and recs[0]["findingCount"] > 40000
 
 
-def test_grow_mode_message_does_not_suggest_an_impossible_bucket_count():
+def test_auto_size_message_does_not_suggest_an_impossible_partition_count():
     findings = [F(i, cves=["C" * 200] * 25) for i in range(5)]
     with pytest.raises(ConfigError) as e:
-        build_records(findings, [], now=NOW, max_record_bytes=3000, grow_buckets=True)
-    assert "even after auto-sizing" in str(e.value) and "MAX_RECORD_BYTES" in str(e.value) and "raise FINDING_LANE" not in str(e.value)
+        build_records(findings, [], now=NOW, max_record_bytes=3000, auto_size=True)
+    assert "after auto-sizing" in str(e.value) and "MAX_RECORD_BYTES" in str(e.value) and "raise FINDING_PARTITIONS" not in str(e.value)
 
 
-def test_auto_growth_is_capped_at_the_bucket_limit():
+def test_auto_growth_is_capped_at_the_partition_limit():
     findings = [F(i, displayId="x" * 150) for i in range(3000)]
-    with pytest.raises(ConfigError, match="low findings needs \\d+ batches \\(limit %d\\)" % MAX_BUCKETS):
-        build_records(findings, [], now=NOW, max_record_bytes=2000, grow_buckets=True)
+    with pytest.raises(ConfigError, match="low findings need \\d+ partitions \\(limit %d\\)" % MAX_PARTITIONS):
+        build_records(findings, [], now=NOW, max_record_bytes=2000, auto_size=True)
 
 
 def test_closed_lookback_boundary_is_exclusive_of_the_cutoff():
@@ -60,7 +60,7 @@ def test_closed_lookback_boundary_is_exclusive_of_the_cutoff():
     at, before = cutoff.isoformat(), (cutoff - timedelta(seconds=1)).isoformat()
     recs = build_records([F(1, open=False, closedAt=at), F(2, open=False, closedAt=before), F(3, open=False, closedAt="garbage")],
                          [], now=NOW, closed_lookback_days=90)
-    assert sorted(flatten(recs)["findings"]) == ["f00001", "f00003"] and recs[0]["closedExcludedCount"] == 1
+    assert sorted(flatten(recs)["findings"]) == ["f00001", "f00003"] and recs[0]["closedFindingsExcludedCount"] == 1
 
 
 def test_items_keep_the_sla_date_and_cap_free_text():
@@ -73,12 +73,12 @@ def test_items_keep_the_sla_date_and_cap_free_text():
 def test_freshness_considers_the_tenable_table():
     old = NOW - timedelta(days=30)
     s = build_records([], [], now=NOW, source_dates={"findings": NOW, "assets": NOW, "tenable_assets": old})[0]
-    assert s["sourceFresh"] is False and s["tenableBatchDate"] == old.isoformat() and s["sourceBatchAgeDays"] == 30
+    assert s["sourceFresh"] is False and s["tenableSourceAsOf"] == old.isoformat() and s["sourceAgeDays"] == 30
 
 
-def test_batch_time_survives_overflow_and_date_with_time_of_day():
-    assert batch_time([{"__date": "2026-02-03", "__hour": "1e999"}]) == datetime(2026, 2, 3, tzinfo=timezone.utc)
-    assert batch_time([{"__date": "2026-02-03 23:30:00", "__hour": "5"}]) == datetime(2026, 2, 3, 5, tzinfo=timezone.utc)
+def test_source_as_of_survives_overflow_and_date_with_time_of_day():
+    assert source_as_of([{"__date": "2026-02-03", "__hour": "1e999"}]) == datetime(2026, 2, 3, tzinfo=timezone.utc)
+    assert source_as_of([{"__date": "2026-02-03 23:30:00", "__hour": "5"}]) == datetime(2026, 2, 3, 5, tzinfo=timezone.utc)
 
 
 def _run(monkeypatch, tmp_path, findings, assets, *extra):
@@ -111,7 +111,7 @@ def test_all_findings_older_than_the_lookback_cannot_wipe_the_dataset(monkeypatc
     rc, DC = _run(monkeypatch, tmp_path, [_f()], [A1])
     assert rc == 2 and DC.return_value.replace_via_session.call_count == 0
     assert "min_records.violated short=findings" in capsys.readouterr().err
-    assert json.load(open(tmp_path / "records.json"))[0]["closedExcludedCount"] == 1
+    assert json.load(open(tmp_path / "records.json"))[0]["closedFindingsExcludedCount"] == 1
 
 
 def test_reject_ratio_boundary_and_validation(monkeypatch, tmp_path):
@@ -133,11 +133,11 @@ def test_reject_ratio_boundary_and_validation(monkeypatch, tmp_path):
 def test_outputs_from_a_previous_run_are_removed_before_an_abort(monkeypatch, tmp_path):
     for name in ("records.json", "_profile.json", "_rejected.json", "_failed.json", "partial.json"):
         (tmp_path / name).write_text("{}")
-    rc, _ = _run(monkeypatch, tmp_path, [_f()], [A1], "--max-record-bytes", "100000", "--finding-lane-buckets", '{"low": 1}',
+    rc, _ = _run(monkeypatch, tmp_path, [_f()], [A1], "--max-record-bytes", "100000", "--finding-partitions", '{"low": 1}',
                  "--push-mode", "upsert", "--min-findings", "5")
     assert rc == 2
     assert not (tmp_path / "partial.json").exists() and not (tmp_path / "_failed.json").exists()
-    assert json.load(open(tmp_path / "records.json"))[0]["id"] == "summary"
+    assert json.load(open(tmp_path / "records.json"))[0]["id"] == "vipr-summary"
 
 
 @pytest.mark.parametrize("name,value,check", [
@@ -247,7 +247,7 @@ def _push_with_listing(monkeypatch, tmp_path, listing):
 
 def test_push_prints_the_target_http_counts_and_confirms_records_landed(monkeypatch, tmp_path, capsys):
     recs_ids = []
-    assert _push_with_listing(monkeypatch, tmp_path, (["summary", "assets-000", "other"], 3)) == 0
+    assert _push_with_listing(monkeypatch, tmp_path, (["vipr-summary", "vipr-assets-001", "other"], 3)) == 0
     out = capsys.readouterr()
     assert "drata target" in out.out
     assert "connection_id=27 resource_id=2" in out.out and "drata http.summary responses=200:1,201:2" in out.out
@@ -281,11 +281,11 @@ def test_http_counts_are_recorded_per_response():
 
 def test_push_flags_old_per_finding_records_that_bury_the_new_ones(monkeypatch, tmp_path, capsys):
     old = ["asset:nationwide____DedupedHostAsset____f0cc07", "finding:nationwide____DedupedTask____022a"]
-    assert _push_with_listing(monkeypatch, tmp_path, (old + ["summary"], 3)) == 0
+    assert _push_with_listing(monkeypatch, tmp_path, (old + ["vipr-summary"], 3)) == 0
     err = capsys.readouterr().err
     assert "verify legacy_records.present sampled=2 example_id=asset:nationwide____DedupedHostAsset____f0cc07" in err
     assert "vipr-drata --push-mode session" in err
-    assert _push_with_listing(monkeypatch, tmp_path, (["summary"], 1)) == 0
+    assert _push_with_listing(monkeypatch, tmp_path, (["vipr-summary"], 1)) == 0
     assert "legacy_records.present" not in capsys.readouterr().err
 
 
@@ -310,7 +310,7 @@ def test_progress_lines_show_every_stage_and_quiet_removes_them(tmp_path, capsys
     assert local(tmp_path) == 0
     out = capsys.readouterr().out
     for event in ("cli run.start", "local tables.loaded", "transform join.start", "transform derive.complete",
-                  "batch records.built", "batch summary", "batch buckets"):
+                  "records built", "records summary", "records partitions"):
         assert event in out, event
     assert re.search(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z INFO  cli run.start ", out, flags=re.M)
     assert local(tmp_path, "--quiet") == 0

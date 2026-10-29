@@ -81,7 +81,7 @@ def test_profile_distinguishes_asset_join_causes():
     assert p["unmatched_asset_id_samples"] == ["zz", " A1 "]
 
 
-def test_profile_value_buckets_are_bounded():
+def test_profile_value_groups_are_bounded():
     rows = [F(silk_id=str(i), severity="tok-%s" % ("x" * 40), tool_severity='{"tenable": "%s"}' % ("y" * 500))
             for i in range(30)]
     p, _, _ = profile(rows, [A()])
