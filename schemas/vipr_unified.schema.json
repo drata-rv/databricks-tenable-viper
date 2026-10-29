@@ -2,205 +2,175 @@
   "type": "object",
   "properties": {
     "id": {
-      "type": "string",
-      "description": "Record id: vipr-summary, vipr-findings-{severity}-NNN, vipr-assets-NNN"
+      "type": "string"
     },
     "recordType": {
-      "type": "string",
-      "description": "scanSummary | findingPartition | assetPartition"
+      "type": "string"
     },
     "displayName": {
-      "type": "string",
-      "description": "Record name"
+      "type": "string"
     },
     "severity": {
       "type": [
         "string",
         "null"
-      ],
-      "description": "Vipr severity of the findings in this partition"
+      ]
     },
     "generatedAt": {
       "type": [
         "string",
         "null"
-      ],
-      "description": "Run time, UTC"
+      ]
     },
     "sourceAsOf": {
       "type": [
         "string",
         "null"
-      ],
-      "description": "Ingest time of the oldest source table"
+      ]
     },
     "sourceAgeDays": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Age of the oldest source table at run time, days"
+      ]
     },
     "sourceFresh": {
       "type": [
         "boolean",
         "null"
-      ],
-      "description": "Oldest source table within MAX_SOURCE_AGE_DAYS"
+      ]
     },
     "findingsSourceAsOf": {
       "type": [
         "string",
         "null"
-      ],
-      "description": "Ingest time of the findings table"
+      ]
     },
     "assetsSourceAsOf": {
       "type": [
         "string",
         "null"
-      ],
-      "description": "Ingest time of the assets table"
+      ]
     },
     "tenableSourceAsOf": {
       "type": [
         "string",
         "null"
-      ],
-      "description": "Ingest time of the Tenable assets table"
+      ]
     },
     "partition": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Partition number, from 1"
+      ]
     },
     "partitionCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Partitions of this kind"
+      ]
     },
     "itemCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Items in this record"
+      ]
     },
     "findingPartitionCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Finding partitions, all severities"
+      ]
     },
     "assetPartitionCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Asset partitions"
+      ]
     },
     "findingCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Findings submitted"
+      ]
     },
     "openFindingCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Open findings"
+      ]
     },
     "openSlaBreachedCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Open findings past SLA"
+      ]
     },
     "openSlaUnknownCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Findings not known to be closed whose SLA status is undetermined"
+      ]
     },
     "openMissingTicketCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Open findings without a ticket"
+      ]
     },
     "openTicketUnknownCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Open findings with undetermined ticket state"
+      ]
     },
     "severityChangedCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Findings whose Vipr severity differs from the scanner"
+      ]
     },
     "closedFindingsExcludedCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Closed findings older than the lookback, not submitted"
+      ]
     },
     "rejectedCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Source rows rejected during transform"
+      ]
     },
     "assetCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Assets submitted"
+      ]
     },
     "inactiveAssetCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Assets not marked active"
+      ]
     },
     "staleAssetCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Assets not seen by Vipr within SCAN_STALE_DAYS"
+      ]
     },
     "tenableStaleAssetCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Assets not scanned by Tenable within SCAN_STALE_DAYS"
+      ]
     },
     "tenableUnmatchedAssetCount": {
       "type": [
         "integer",
         "null"
-      ],
-      "description": "Assets with no or ambiguous Tenable match"
+      ]
     },
     "findings": {
       "type": [
@@ -211,127 +181,109 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string",
-            "description": "Vipr finding id"
+            "type": "string"
           },
           "displayId": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "Display id"
+            ]
           },
           "viprSeverity": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "Vipr severity: info | low | medium | high | critical"
+            ]
           },
           "scannerSeverity": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "Scanner severity, same scale"
+            ]
           },
           "severityChanged": {
             "type": [
               "boolean",
               "null"
-            ],
-            "description": "Vipr severity differs from the scanner"
+            ]
           },
           "severityDirection": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "downgraded | upgraded"
+            ]
           },
           "toolSeverities": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "Raw per-tool ratings"
+            ]
           },
           "open": {
             "type": [
               "boolean",
               "null"
-            ],
-            "description": "Finding is open"
+            ]
           },
           "ignored": {
             "type": [
               "boolean",
               "null"
-            ],
-            "description": "Finding is ignored"
+            ]
           },
           "hasTicket": {
             "type": [
               "boolean",
               "null"
-            ],
-            "description": "Ticket linked"
+            ]
           },
           "missingTicket": {
             "type": [
               "boolean",
               "null"
-            ],
-            "description": "Open without a ticket"
+            ]
           },
           "slaDate": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "SLA due date"
+            ]
           },
           "slaBreached": {
             "type": [
               "boolean",
               "null"
-            ],
-            "description": "Open past SLA"
+            ]
           },
           "closedAfterSla": {
             "type": [
               "boolean",
               "null"
-            ],
-            "description": "Closed after the SLA date"
+            ]
           },
           "firstSeen": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "First seen"
+            ]
           },
           "closedAt": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "Closed at"
+            ]
           },
           "assetId": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "Asset id"
+            ]
           },
           "assetName": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "Asset name"
+            ]
           },
           "cves": {
             "type": [
@@ -340,20 +292,17 @@
             ],
             "items": {
               "type": "string"
-            },
-            "description": "CVE ids, capped"
+            }
           },
           "cveCount": {
             "type": [
               "integer",
               "null"
-            ],
-            "description": "CVE count before the cap"
+            ]
           }
         },
         "additionalProperties": true
-      },
-      "description": "Finding items"
+      }
     },
     "assets": {
       "type": [
@@ -364,97 +313,83 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string",
-            "description": "Vipr asset id"
+            "type": "string"
           },
           "name": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "Asset name"
+            ]
           },
           "assetType": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "Asset type"
+            ]
           },
           "isActive": {
             "type": [
               "boolean",
               "null"
-            ],
-            "description": "Asset is active"
+            ]
           },
           "lastSeen": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "Last seen by Vipr"
+            ]
           },
           "daysSinceSeen": {
             "type": [
               "integer",
               "null"
-            ],
-            "description": "Days since last seen"
+            ]
           },
           "viprLastSeenStale": {
             "type": [
               "boolean",
               "null"
-            ],
-            "description": "Not seen within SCAN_STALE_DAYS"
+            ]
           },
           "openFindingsCount": {
             "type": [
               "integer",
               "null"
-            ],
-            "description": "Open findings on the asset"
+            ]
           },
           "tenableMatch": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "matched | none | ambiguous | not_configured | no_data"
+            ]
           },
           "tenableLastScan": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "Last Tenable scan"
+            ]
           },
           "tenableDaysSinceScan": {
             "type": [
               "integer",
               "null"
-            ],
-            "description": "Days since the last Tenable scan"
+            ]
           },
           "tenableScanStale": {
             "type": [
               "boolean",
               "null"
-            ],
-            "description": "Tenable scan older than SCAN_STALE_DAYS"
+            ]
           },
           "tenableLastAuthenticatedScan": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "Last authenticated Tenable scan"
+            ]
           }
         },
         "additionalProperties": true
-      },
-      "description": "Asset items"
+      }
     }
   },
   "required": [
@@ -462,6 +397,5 @@
     "recordType",
     "displayName"
   ],
-  "additionalProperties": true,
-  "description": "Vipr vulnerability evidence"
+  "additionalProperties": true
 }

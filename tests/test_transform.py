@@ -90,7 +90,7 @@ def test_shipped_schema_is_plain_drata_subset():
                 out.add(k)
                 out |= keys(v) if k != "properties" else set().union(*[keys(x) for x in v.values()])
         return out
-    assert keys(_schema()) <= {"type", "properties", "required", "additionalProperties", "items", "description"}
+    assert keys(_schema()) <= {"type", "properties", "required", "additionalProperties", "items"}
 
 
 def test_partition_records_match_shipped_and_strict_schema():

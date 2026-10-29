@@ -37,10 +37,6 @@ def type_label(prop):
     return " or ".join(sorted(t for t in rules.base_types(prop) if t != "null"))
 
 
-def cell(text):
-    return text.replace("|", "/")
-
-
 def fact_tables(schema):
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     records = build_records([{"id": "f", "viprSeverity": "low", "open": True}], [{"id": "a"}], now=now,
@@ -50,14 +46,11 @@ def fact_tables(schema):
     for rtype, letter in RECORDS:
         for k in next(r for r in records if r["recordType"] == rtype):
             where[k] = where.get(k, "") + letter
-    out = ["Records: S scanSummary, F findingPartition, A assetPartition.", "", "| Fact | Type | Records | Description |",
-           "|---|---|---|---|"]
-    out += ["| `%s` | %s | %s | %s |" % (k, type_label(props[k]), where[k], cell(props[k].get("description", "")))
-            for k in props if k in where]
+    out = ["Records: S scanSummary, F findingPartition, A assetPartition.", "", "| Fact | Type | Records |", "|---|---|---|"]
+    out += ["| `%s` | %s | %s |" % (k, type_label(props[k]), where[k]) for k in props if k in where]
     for arr in ("findings", "assets"):
-        out += ["", "`%s[]` items (Advanced editor, nested rule):" % arr, "", "| Fact | Type | Description |", "|---|---|---|"]
-        out += ["| `%s` | %s | %s |" % (k, type_label(v), cell(v.get("description", "")))
-                for k, v in props[arr]["items"]["properties"].items()]
+        out += ["", "`%s[]` items (Advanced editor, nested rule):" % arr, "", "| Fact | Type |", "|---|---|"]
+        out += ["| `%s` | %s |" % (k, type_label(v)) for k, v in props[arr]["items"]["properties"].items()]
     return "\n".join(out)
 
 
