@@ -68,7 +68,7 @@ Environment variables; blank means default. All reach the Databricks job.
 
 Resource id: `GET /public/v2/custom-connections/{id}?expand[]=customResources`, `customResources[0].id`.
 
-A resource schema that requires fields the records lack aborts the run before sending (exit 2). Upgrading from 0.13 or earlier renames fields: edit the resource schema in Drata and paste the schema file before building tests, or use a new connection. Records from earlier versions are not removed by upsert; run once with `--push-mode session` or use a new connection.
+Before sending, the run reads the resource schema: it aborts (exit 2) when the schema requires fields the records lack, and warns (`schema facts_missing`) when facts used by the records are not declared, since tests cannot see them. Upgrading from 0.13 or earlier renames fields: edit the resource schema in Drata and paste the schema file before building tests, or use a new connection. Records from earlier versions are not removed by upsert; run once with `--push-mode session` or use a new connection.
 
 ## Databricks
 

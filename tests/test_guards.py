@@ -342,3 +342,52 @@ def test_readback_does_not_cry_wolf_when_it_only_saw_part_of_a_large_resource(mo
     captured = capsys.readouterr()
     assert "verify sample.inconclusive sampled=500" in captured.out and "records.not_visible" not in captured.err
     assert "verify legacy_records.present sampled=500" in captured.err
+
+
+SHIPPED = json.loads((__import__("pathlib").Path(__file__).parent.parent / "schemas" / "vipr_unified.schema.json").read_text())
+
+
+def _push_with_stored_schema(monkeypatch, tmp_path, stored):
+    monkeypatch.setenv("DRATA_CONNECTION_ID", "27")
+    monkeypatch.setenv("DRATA_RESOURCE_ID", "2")
+    monkeypatch.setenv("DRATA_API_KEY", "k")
+    with mock.patch.object(cli, "DrataClient") as DC:
+        client = DC.return_value
+        client.resource_schema.return_value = stored
+        client.replace_via_session.return_value = (18, [], "complete")
+        client.upsert.return_value = (18, [])
+        client.unverified = 0
+        client.http_counts = {200: 1}
+        client.list_records.return_value = None
+        return local(tmp_path, "--push"), client
+
+
+def test_current_resource_schema_passes_the_preflight_silently(monkeypatch, tmp_path, capsys):
+    rc, client = _push_with_stored_schema(monkeypatch, tmp_path, SHIPPED)
+    captured = capsys.readouterr()
+    assert rc == 0 and "facts_missing" not in captured.err and "schema mismatch" not in captured.err
+
+
+def test_stale_resource_schema_warns_with_the_facts_tests_would_miss(monkeypatch, tmp_path, capsys):
+    old = json.loads(json.dumps(SHIPPED))
+    for k in ("severity", "partition", "staleAssetCount", "sourceAsOf"):
+        old["properties"].pop(k)
+    del old["properties"]["findings"]["items"]["properties"]["slaBreached"]
+    rc, client = _push_with_stored_schema(monkeypatch, tmp_path, old)
+    err = capsys.readouterr().err
+    assert rc == 0 and client.replace_via_session.called
+    assert "schema facts_missing count=5" in err and "findings[].slaBreached" in err and "severity" in err
+
+
+def test_resource_schema_requiring_unsent_fields_aborts_before_any_push(monkeypatch, tmp_path, capsys):
+    legacy = {"type": "object", "properties": {"id": {"type": "string"}, "sourceId": {"type": "string"}},
+              "required": ["id", "sourceId"]}
+    rc, client = _push_with_stored_schema(monkeypatch, tmp_path, legacy)
+    assert rc == 2 and "schema mismatch required_not_sent=sourceId" in capsys.readouterr().err
+    assert not client.replace_via_session.called and not client.upsert.called
+
+
+def test_closed_resource_schema_rejects_undeclared_keys_before_any_push(monkeypatch, tmp_path, capsys):
+    closed = {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"], "additionalProperties": False}
+    rc, client = _push_with_stored_schema(monkeypatch, tmp_path, closed)
+    assert rc == 2 and "sent_not_in_schema" in capsys.readouterr().err and not client.replace_via_session.called

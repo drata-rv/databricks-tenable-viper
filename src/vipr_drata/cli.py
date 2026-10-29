@@ -336,9 +336,27 @@ def _schema_mismatch(dc, conn, res, records):
             log.error("schema", "mismatch", required_not_sent=missing[:8] or "none", sent_not_in_schema=extra[:8] or "none",
                       pushed=False, remedy="edit the resource schema in Drata and paste schemas/vipr_unified.schema.json")
             return True
+        _warn_undeclared_facts(declared, records)
     except Exception as e:
         log.warn("schema", "check.skipped", error_type=type(e).__name__)
     return False
+
+
+def _warn_undeclared_facts(declared, records):
+    if not isinstance(declared, dict):
+        return
+    facts = {k for r in records for k in r if k not in declared}
+    for array in ("findings", "assets"):
+        item_props = ((declared.get(array) or {}).get("items") or {}).get("properties")
+        if isinstance(item_props, dict):
+            keys = set()
+            for r in records:
+                for item in r.get(array) or []:
+                    keys.update(item)
+            facts |= {"%s[].%s" % (array, k) for k in keys if k not in item_props}
+    if facts:
+        log.warn("schema", "facts_missing", count=len(facts), facts=sorted(facts)[:12],
+                 effect="custom tests cannot use these facts", remedy="paste schemas/vipr_unified.schema.json into the resource")
 
 
 def _verify(dc, conn, res, records):
