@@ -95,29 +95,43 @@ def _count(items, key):
     return sum(1 for i in items if i.get(key) is True)
 
 
-def _summary(findings, assets, *, now, source_dates, max_source_age_days, finding_partitions, asset_partitions,
-             closed_excluded, rejected):
+def finding_counts(findings):
     open_f = [f for f in findings if f.get("open") is True]
-    dates = list(source_dates.values())
-    oldest = None if not dates or any(d is None for d in dates) else min(dates)
-    fresh = None if oldest is None else (now - oldest) <= timedelta(days=max_source_age_days)
     return {
-        "id": "%s-summary" % RECORD_PREFIX, "recordType": "scanSummary", "displayName": "Vipr Scan Summary",
-        "generatedAt": _iso(now), "sourceAsOf": _iso(oldest),
-        "findingsSourceAsOf": _iso(source_dates.get("findings")), "assetsSourceAsOf": _iso(source_dates.get("assets")),
-        "tenableSourceAsOf": _iso(source_dates.get("tenable_assets")),
-        "sourceAgeDays": None if oldest is None else (now - oldest).days, "sourceFresh": fresh,
-        "findingPartitionCount": sum(finding_partitions.values()), "assetPartitionCount": asset_partitions,
-        "findingCount": len(findings), "openFindingCount": len(open_f),
-        "openSlaBreachedCount": _count(open_f, "slaBreached"),
+        "openFindingCount": len(open_f), "openSlaBreachedCount": _count(open_f, "slaBreached"),
         "openSlaUnknownCount": sum(1 for f in open_f if f.get("slaBreached") is None),
         "openMissingTicketCount": _count(open_f, "missingTicket"),
         "openTicketUnknownCount": sum(1 for f in open_f if f.get("missingTicket") is None),
+    }
+
+
+def asset_counts(assets):
+    return {
+        "staleAssetCount": _count(assets, "viprLastSeenStale"), "tenableStaleAssetCount": _count(assets, "tenableScanStale"),
+        "tenableUnmatchedAssetCount": sum(1 for a in assets if a.get("tenableMatch") in ("none", "ambiguous")),
+    }
+
+
+def freshness(now, source_dates, max_source_age_days):
+    dates = list(source_dates.values())
+    oldest = None if not dates or any(d is None for d in dates) else min(dates)
+    return {
+        "generatedAt": _iso(now), "sourceAsOf": _iso(oldest),
+        "sourceAgeDays": None if oldest is None else (now - oldest).days,
+        "sourceFresh": None if oldest is None else (now - oldest) <= timedelta(days=max_source_age_days),
+    }
+
+
+def _summary(findings, assets, *, stamp, source_dates, finding_partitions, asset_partitions, closed_excluded, rejected):
+    return {
+        "id": "%s-summary" % RECORD_PREFIX, "recordType": "scanSummary", "displayName": "Vipr Scan Summary", **stamp,
+        "findingsSourceAsOf": _iso(source_dates.get("findings")), "assetsSourceAsOf": _iso(source_dates.get("assets")),
+        "tenableSourceAsOf": _iso(source_dates.get("tenable_assets")),
+        "findingPartitionCount": sum(finding_partitions.values()), "assetPartitionCount": asset_partitions,
+        "findingCount": len(findings), **finding_counts(findings),
         "severityChangedCount": _count(findings, "severityChanged"),
         "closedFindingsExcludedCount": closed_excluded, "rejectedCount": rejected,
-        "assetCount": len(assets), "staleAssetCount": _count(assets, "viprLastSeenStale"),
-        "tenableStaleAssetCount": _count(assets, "tenableScanStale"),
-        "tenableUnmatchedAssetCount": sum(1 for a in assets if a.get("tenableMatch") in ("none", "ambiguous")),
+        "assetCount": len(assets), **asset_counts(assets),
     }
 
 
@@ -163,22 +177,24 @@ def build_records(findings, assets, *, now, finding_partitions=None, asset_parti
         finding_partitions = {sev: auto_partitions(by_severity[sev], finding_partitions.get(sev, 1), target, sev + " findings")
                               for sev in SEVERITIES}
         asset_partitions = auto_partitions(asset_items, asset_partitions, target, "assets")
-    records = [_summary(kept, asset_items, now=now, source_dates=source_dates or {},
-                        max_source_age_days=max_source_age_days, finding_partitions=finding_partitions,
-                        asset_partitions=asset_partitions, closed_excluded=excluded, rejected=rejected)]
-    stamp = {"generatedAt": _iso(now), "sourceAsOf": records[0]["sourceAsOf"]}
+    stamp = freshness(now, source_dates or {}, max_source_age_days)
+    records = [_summary(kept, asset_items, stamp=stamp, source_dates=source_dates or {},
+                        finding_partitions=finding_partitions, asset_partitions=asset_partitions,
+                        closed_excluded=excluded, rejected=rejected)]
     for sev in SEVERITIES:
         n = finding_partitions.get(sev, DEFAULT_FINDING_PARTITIONS[sev])
         for i, grp in enumerate(_group(by_severity[sev], n), 1):
             records.append({
                 "id": "%s-findings-%s-%03d" % (RECORD_PREFIX, sev, i), "recordType": "findingPartition",
                 "displayName": "Vipr Findings - %s - Partition %d of %d" % (sev.capitalize(), i, n),
-                "severity": sev, **stamp, "partition": i, "partitionCount": n, "itemCount": len(grp), "findings": grp})
+                "severity": sev, **stamp, "partition": i, "partitionCount": n, "itemCount": len(grp),
+                **finding_counts(grp), "findings": grp})
     for i, grp in enumerate(_group(asset_items, asset_partitions), 1):
         records.append({
             "id": "%s-assets-%03d" % (RECORD_PREFIX, i), "recordType": "assetPartition",
             "displayName": "Vipr Assets - Partition %d of %d" % (i, asset_partitions),
-            **stamp, "partition": i, "partitionCount": asset_partitions, "itemCount": len(grp), "assets": grp})
+            **stamp, "partition": i, "partitionCount": asset_partitions, "itemCount": len(grp),
+            **asset_counts(grp), "assets": grp})
     for r in records:  # Drata rejects bodies over 5 MB
         size = size_of(r)
         if size > max_record_bytes:

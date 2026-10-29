@@ -50,9 +50,6 @@ def _iso(dt):
 _SEV_ALIASES = {"informational": "info", "none": "info", "moderate": "medium", "important": "high"}
 
 
-_SEV_ALIASES = {"informational": "info", "none": "info", "moderate": "medium", "important": "high"}
-
-
 def _sev(v):
     if not v:
         return None

@@ -1,31 +1,27 @@
 # vipr-drata
 
-Databricks Vipr tables -> one Drata Custom Connection.
+Databricks Vipr vulnerability tables to one Drata Custom Connection resource.
 
-## Data model
-Each run submits a small set of records (about 20 for small data, under 100 at 170k findings), never one record per finding:
+## Records
+
+A run submits a fixed set of records, never one per finding.
 
 | Record id | `recordType` | Content |
 |---|---|---|
-| `summary` | `summary` | counts, `generatedAt`, `sourceFresh`, per-table batch dates, `rejectedCount` |
-| `findings-<lane>-000` ... | `findingPartition` | `severity` + `findings[]`, one item per finding |
-| `assets-000` ... | `assetPartition` | `assets[]`, one item per asset |
+| `vipr-summary` | `scanSummary` | freshness, counts, source dates |
+| `vipr-findings-<severity>-NNN` | `findingPartition` | one severity, counts, `findings[]` |
+| `vipr-assets-NNN` | `assetPartition` | counts, `assets[]` |
 
-Findings are grouped by Vipr severity lane (`critical high medium low info unknown`), then spread over batches by a stable hash of the finding id, so an item stays in the same record. Drata scores, lists and excludes per record, so a lane makes a failing record meaningful and lets tests target critical/high SLAs. Empty batches are still sent. Closed findings older than `CLOSED_LOOKBACK_DAYS` (90) are left out.
+Severities: `critical high medium low info unknown`. NNN starts at 001. Items are assigned to a partition by a stable hash of their id. Empty partitions are still sent. Partition counts grow in powers of two to keep each record near half of `MAX_RECORD_BYTES`. Closed findings older than `CLOSED_LOOKBACK_DAYS` are omitted.
 
-Batch counts: `FINDING_PARTITIONS` (default `{"critical":1,"high":2,"medium":4,"low":4,"info":1,"unknown":1}`) and `ASSET_PARTITIONS` (4) are minimums. They grow automatically in both push modes, in powers of two (max 256 per lane), so every record stays near `MAX_RECORD_BYTES`/2 (2 MB); nothing needs tuning. Each run prints the effective counts; when a lane sits near a power-of-two boundary, pin `FINDING_PARTITIONS` to the printed numbers so record ids stop moving between nights.
+Every record carries `generatedAt`, `sourceAsOf`, `sourceAgeDays` and `sourceFresh`. Partition records carry scalar counts (`openSlaBreachedCount`, `openMissingTicketCount`, `staleAssetCount`) for the guided test builder; the arrays serve Advanced-editor tests.
 
-Default push mode is `upsert`: fixed record ids are updated in place, nothing is deleted, no Drata session state is involved. `--push-mode session` stages all records, then atomically replace the dataset. Records not staged (old per-finding records, orphaned batches) are deleted. Any failure, including a failed `complete`, SIGINT or SIGTERM, cancels the session and leaves the previous data. Sessions of this tool older than 2 hours that were left `IN_PROGRESS` by a killed run are cancelled first; other sessions are never touched. The bundle sets `max_concurrent_runs: 1`. `--push-mode upsert` only updates and never deletes, so if batch counts shrink later the higher-numbered records keep stale items (use session mode).
-
-Log lines: `<UTC timestamp> <LEVEL> <component> <event> key=value ...`; INFO to stdout, WARN/ERROR to stderr, `--quiet` suppresses INFO. If Drata does not attach staged records to the session (probe fails or `complete` returns 422 "no data records"), the run cancels the session and falls back to upsert, which leaves old records in place; use a new custom connection to remove old records.
-
-Migrating from the old one-record-per-finding design: in Drata, edit the existing resource's schema and paste `schemas/vipr_unified.schema.json` (same connection and resource ids; the old schema requires `sourceId`, which Drata would reject the new records for; the run aborts before sending when it detects this). Then run once with `--push-mode session` to remove the ~190k old `finding:*` / `asset:*` records (upsert never deletes them; the push prints a note when it sees them).
-
-Reference run, 170k findings + 21k assets: 78 records, ~91 MB, largest record 1.6 MB, 28 requests (list, 26 stage, complete), ~12 s, ~0.6 GB memory (`--local --local-rows 170000`).
-Aborts (exit 2) before pushing if a record exceeds `MAX_RECORD_BYTES` (4 MB on the wire, max 4.5 MB; Drata limit 5 MB), if fewer than `MIN_FINDINGS`/`MIN_ASSETS` remain after the closed-finding lookback (an empty source would make every array test pass), or if rejected/total exceeds the reject ratio.
+Schema: [`schemas/vipr_unified.schema.json`](schemas/vipr_unified.schema.json). Tests: [`custom-tests/README.md`](custom-tests/README.md).
 
 ## Setup
-Python 3.10+ (create the venv with an explicit `python3.12`/`python3.11`/`python3.10` if your default `python3` is older). Run everything from the repo root; `.env` lives there.
+
+Python 3.10+, from the repo root.
+
 ```
 python3.12 -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'
@@ -34,45 +30,54 @@ pytest
 ```
 
 ## Run
+
 ```
-vipr-drata --local                    # synthetic data in ./local_data, no Databricks, no push
-vipr-drata --local --local-rows 170000   # volume check (data in ./local_data/scale): records, sizes
-vipr-drata --local --push             # pushes SYNTHETIC data to the configured resource
-vipr-drata --dry-run                  # real Databricks, no push
-vipr-drata                            # push (sandbox unless --drata-prod)
-vipr-drata --push-mode session        # atomic replace; deletes records not in this run
+vipr-drata --local                       # synthetic data, no Databricks, no push
+vipr-drata --local --local-rows 170000   # volume check
+vipr-drata --dry-run                     # Databricks, no push
+vipr-drata                               # push (sandbox unless --drata-prod)
+vipr-drata --push-mode session           # atomic replace
 ```
-Output in `./output`: `_run.log` (every log line of the run, also with `--quiet`), `records.json` (exactly what is submitted), `_rejected.json`, `_profile.json` (`_failed.json` on push errors).
-`_profile.json` explains null fields: `raw_tool_severity` (keys/values seen, `vipr_severity_by_tool_value`), asset join outcomes, per-column null counts.
-Tunables (env vars, blank = default; see `.env.example`; all reach the Databricks job): `FINDING_PARTITIONS` (lane minimums, 1-256 each), `ASSET_PARTITIONS` (4, 1-256), `CLOSED_LOOKBACK_DAYS` (90), `MAX_SOURCE_AGE_DAYS` (3), `MAX_RECORD_BYTES` (4000000, 100000-4500000), `MIN_FINDINGS` / `MIN_ASSETS` (1), `MAX_REJECT_RATIO` (0.05; 0-1; off with `--local`), `SCAN_STALE_DAYS` (7).
+
+Output in `./output`: `_run.log`, `records.json`, `_profile.json`, `_rejected.json`, `_failed.json` (on push errors). Log lines: `<UTC timestamp> <LEVEL> <component> <event> key=value`; INFO to stdout, WARN and ERROR to stderr, `--quiet` suppresses INFO.
+
+## Configuration
+
+Environment variables; blank means default. All reach the Databricks job.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DRATA_PUSH_MODE` | `upsert` | `upsert` updates in place and never deletes; `session` replaces the dataset atomically |
+| `FINDING_PARTITIONS` | `{"critical":1,"high":2,"medium":4,"low":4,"info":1,"unknown":1}` | minimum partitions per severity, 1-256 |
+| `ASSET_PARTITIONS` | `4` | minimum asset partitions, 1-256 |
+| `MAX_RECORD_BYTES` | `4000000` | record size limit, 100000-4500000 |
+| `CLOSED_LOOKBACK_DAYS` | `90` | closed findings older than this are omitted |
+| `MAX_SOURCE_AGE_DAYS` | `3` | `sourceFresh` is false when the oldest source table is older |
+| `SCAN_STALE_DAYS` | `7` | asset staleness window |
+| `MIN_FINDINGS`, `MIN_ASSETS` | `1` | abort when fewer remain after the lookback |
+| `MAX_REJECT_RATIO` | `0.05` | abort when rejected/total exceeds it; off with `--local` |
+| `SCANNER_TOOL` | `tenable` | `tool_severity` key compared with Vipr severity |
+| `SCANNER_SEVERITY_MAP` | | JSON map of numeric tool values, e.g. `{"1":"low","2":"medium"}` |
+| `TENABLE_ASSETS_TABLE` | | optional Tenable scan evidence |
 
 ## Drata
-1. Create one CUSTOM connection with `schemas/vipr_unified.schema.json`, display name key `displayName`.
-2. Set `DRATA_CONNECTION_ID`, `DRATA_RESOURCE_ID` and `DRATA_API_KEY` (create/update scope).
-3. Prod: `DRATA_API_KEY_PROD` and `--drata-prod`.
 
-Custom tests (Advanced editor). SLA for critical and high findings: filtering criteria, Inclusion:
-```json
-{"all":[{"fact":"recordType","operator":"equal","value":"findingPartition"},
-        {"any":[{"fact":"severity","operator":"equal","value":"critical"},
-                {"fact":"severity","operator":"equal","value":"high"}]}]}
-```
-Condition (every open finding within SLA):
-```json
-{"all":[{"fact":"findings","operator":"all","value":{"any":[
-  {"fact":"open","operator":"equal","value":false},
-  {"fact":"slaBreached","operator":"equal","value":false}]}}]}
-```
-Freshness: filter `recordType` equal `summary`; condition `sourceFresh` equal `true` (source data age at push time) plus `generatedAt` Within Last (Days) 2 (the nightly job ran).
+1. Create a Custom connection from `schemas/vipr_unified.schema.json`; display name key `displayName`.
+2. Set `DRATA_CONNECTION_ID`, `DRATA_RESOURCE_ID`, `DRATA_API_KEY` (`DRATA_API_KEY_PROD` with `--drata-prod`).
+3. Build the tests in [`custom-tests/README.md`](custom-tests/README.md).
+
+Resource id: `GET /public/v2/custom-connections/{id}?expand[]=customResources`, `customResources[0].id`.
+
+A resource schema that requires fields the records lack aborts the run before sending (exit 2). Upgrading from 0.13 or earlier renames fields: edit the resource schema in Drata and paste the schema file before building tests, or use a new connection. Records from earlier versions are not removed by upsert; run once with `--push-mode session` or use a new connection.
 
 ## Databricks
-Set `DATABRICKS_{HOST,TOKEN,CLIENT_ID,CLIENT_SECRET}_{TEST|PROD}` (chosen by `--workspace`), `DATABRICKS_WAREHOUSE_ID` and `VIPR_FINDINGS_TABLE` / `VIPR_ASSETS_TABLE` in `.env`. Optional `TENABLE_ASSETS_TABLE` adds Tenable scan evidence.
 
-Deploy: bump `version` in `pyproject.toml`, then `databricks bundle deploy -t test|prod`. Prod needs `findings_table`, `assets_table`, `run_as` and `workspace.host` set.
+Set `DATABRICKS_{HOST,TOKEN,CLIENT_ID,CLIENT_SECRET}_{TEST|PROD}`, `DATABRICKS_WAREHOUSE_ID`, `VIPR_FINDINGS_TABLE` and `VIPR_ASSETS_TABLE` in `.env`.
 
-## Scanner comparison
-`scannerSeverity` is the `tool_severity` entry whose key contains `SCANNER_TOOL` (default `tenable`), compared with Vipr severity. Numeric tool values stay undetermined until `SCANNER_SEVERITY_MAP` maps them, e.g. `{"1":"low","2":"medium","3":"high","4":"critical"}`. Read the scale from `_profile.json` (`vipr_severity_by_tool_value`). `toolSeverities` always carries every raw tool rating (`rapid7_insight_vm-1=2`).
+Deploy: bump `version` in `pyproject.toml`, then `databricks bundle deploy -t test|prod`. Prod needs `findings_table`, `assets_table`, `run_as` and `workspace.host`.
+
+`_profile.json` explains null fields: tool severity keys and values, asset join outcomes, null counts.
 
 ## Exit codes
-`0` ok, `1` push or Databricks extraction failure, `2` config or guard abort (missing or invalid settings, too few items, oversized record, reject ratio, test tables with `--drata-prod`), `130` interrupted (SIGINT/SIGTERM).
-Previous `records.json`, `_profile.json`, `_rejected.json` and `_failed.json` are deleted at the start of each run, so what is on disk always belongs to the last run.
+
+`0` ok, `1` push or extraction failure, `2` configuration or guard abort, `130` interrupted.

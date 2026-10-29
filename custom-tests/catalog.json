@@ -1,0 +1,465 @@
+[
+  {
+    "id": "scan-data-current",
+    "name": "Vipr Scan Data Is Current",
+    "editor": "Builder",
+    "description": "Vipr vulnerability data was refreshed within the allowed age and the nightly sync ran in the last 2 days.",
+    "controls": [
+      {
+        "id": "DCF-18",
+        "name": "Vulnerability Scans"
+      },
+      {
+        "id": "DCF-455",
+        "name": "Quarterly Internal Vulnerability Scans"
+      }
+    ],
+    "filter": {
+      "mode": "inclusion",
+      "evaluator": {
+        "all": [
+          {
+            "fact": "recordType",
+            "operator": "equal",
+            "value": "scanSummary"
+          }
+        ]
+      }
+    },
+    "condition": {
+      "all": [
+        {
+          "fact": "sourceFresh",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "fact": "generatedAt",
+          "operator": "withinLastDays",
+          "value": 2
+        }
+      ]
+    },
+    "note": "Tests 2-8 also require a sync within the last 2 days, so a stopped job fails them."
+  },
+  {
+    "id": "critical-addressed",
+    "name": "Vipr Critical Vulnerabilities Addressed",
+    "editor": "Builder",
+    "description": "No open critical vulnerability is past its SLA date, and none has an unparseable SLA date.",
+    "controls": [
+      {
+        "id": "DCF-18",
+        "name": "Vulnerability Scans"
+      },
+      {
+        "id": "DCF-160",
+        "name": "Service Level Agreements (SLAs) for Security"
+      },
+      {
+        "id": "DCF-456",
+        "name": "Vulnerabilities Identified and Resolved"
+      }
+    ],
+    "filter": {
+      "mode": "inclusion",
+      "evaluator": {
+        "all": [
+          {
+            "fact": "recordType",
+            "operator": "equal",
+            "value": "findingPartition"
+          },
+          {
+            "fact": "severity",
+            "operator": "equal",
+            "value": "critical"
+          }
+        ]
+      }
+    },
+    "condition": {
+      "all": [
+        {
+          "fact": "sourceFresh",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "fact": "generatedAt",
+          "operator": "withinLastDays",
+          "value": 2
+        },
+        {
+          "fact": "openSlaBreachedCount",
+          "operator": "equal",
+          "value": 0
+        },
+        {
+          "fact": "openSlaUnknownCount",
+          "operator": "equal",
+          "value": 0
+        }
+      ]
+    }
+  },
+  {
+    "id": "high-addressed",
+    "name": "Vipr High Vulnerabilities Addressed",
+    "editor": "Builder",
+    "description": "No open high vulnerability is past its SLA date, and none has an unparseable SLA date.",
+    "controls": [
+      {
+        "id": "DCF-18",
+        "name": "Vulnerability Scans"
+      },
+      {
+        "id": "DCF-160",
+        "name": "Service Level Agreements (SLAs) for Security"
+      },
+      {
+        "id": "DCF-456",
+        "name": "Vulnerabilities Identified and Resolved"
+      }
+    ],
+    "filter": {
+      "mode": "inclusion",
+      "evaluator": {
+        "all": [
+          {
+            "fact": "recordType",
+            "operator": "equal",
+            "value": "findingPartition"
+          },
+          {
+            "fact": "severity",
+            "operator": "equal",
+            "value": "high"
+          }
+        ]
+      }
+    },
+    "condition": {
+      "all": [
+        {
+          "fact": "sourceFresh",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "fact": "generatedAt",
+          "operator": "withinLastDays",
+          "value": 2
+        },
+        {
+          "fact": "openSlaBreachedCount",
+          "operator": "equal",
+          "value": 0
+        },
+        {
+          "fact": "openSlaUnknownCount",
+          "operator": "equal",
+          "value": 0
+        }
+      ]
+    }
+  },
+  {
+    "id": "medium-low-within-sla",
+    "name": "Vipr Medium and Low Vulnerabilities Within SLA",
+    "editor": "Advanced",
+    "description": "No open medium or low vulnerability is past its SLA date, and none has an unparseable SLA date.",
+    "controls": [
+      {
+        "id": "DCF-160",
+        "name": "Service Level Agreements (SLAs) for Security"
+      },
+      {
+        "id": "DCF-456",
+        "name": "Vulnerabilities Identified and Resolved"
+      }
+    ],
+    "filter": {
+      "mode": "inclusion",
+      "evaluator": {
+        "all": [
+          {
+            "fact": "recordType",
+            "operator": "equal",
+            "value": "findingPartition"
+          },
+          {
+            "fact": "severity",
+            "operator": "in",
+            "value": [
+              "medium",
+              "low"
+            ]
+          }
+        ]
+      }
+    },
+    "condition": {
+      "all": [
+        {
+          "fact": "sourceFresh",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "fact": "generatedAt",
+          "operator": "withinLastDays",
+          "value": 2
+        },
+        {
+          "fact": "openSlaBreachedCount",
+          "operator": "equal",
+          "value": 0
+        },
+        {
+          "fact": "openSlaUnknownCount",
+          "operator": "equal",
+          "value": 0
+        }
+      ]
+    }
+  },
+  {
+    "id": "critical-high-ticketed",
+    "name": "Vipr Critical and High Vulnerabilities Are Ticketed",
+    "editor": "Advanced",
+    "description": "Every open critical and high vulnerability has a ticket, so it is tracked to resolution.",
+    "controls": [
+      {
+        "id": "DCF-18",
+        "name": "Vulnerability Scans"
+      },
+      {
+        "id": "DCF-315",
+        "name": "Management of Security Vulnerabilities"
+      }
+    ],
+    "filter": {
+      "mode": "inclusion",
+      "evaluator": {
+        "all": [
+          {
+            "fact": "recordType",
+            "operator": "equal",
+            "value": "findingPartition"
+          },
+          {
+            "fact": "severity",
+            "operator": "in",
+            "value": [
+              "critical",
+              "high"
+            ]
+          }
+        ]
+      }
+    },
+    "condition": {
+      "all": [
+        {
+          "fact": "sourceFresh",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "fact": "generatedAt",
+          "operator": "withinLastDays",
+          "value": 2
+        },
+        {
+          "fact": "openMissingTicketCount",
+          "operator": "equal",
+          "value": 0
+        },
+        {
+          "fact": "openTicketUnknownCount",
+          "operator": "equal",
+          "value": 0
+        }
+      ]
+    }
+  },
+  {
+    "id": "assets-seen-recently",
+    "name": "Vipr Assets Seen Recently",
+    "editor": "Builder",
+    "description": "Every asset in the Vipr inventory was seen within the stale window.",
+    "controls": [
+      {
+        "id": "DCF-18",
+        "name": "Vulnerability Scans"
+      }
+    ],
+    "filter": {
+      "mode": "inclusion",
+      "evaluator": {
+        "all": [
+          {
+            "fact": "recordType",
+            "operator": "equal",
+            "value": "assetPartition"
+          }
+        ]
+      }
+    },
+    "condition": {
+      "all": [
+        {
+          "fact": "sourceFresh",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "fact": "generatedAt",
+          "operator": "withinLastDays",
+          "value": 2
+        },
+        {
+          "fact": "staleAssetCount",
+          "operator": "equal",
+          "value": 0
+        }
+      ]
+    },
+    "note": "The stale window is SCAN_STALE_DAYS (default 7). Assets with no last-seen date are not counted."
+  },
+  {
+    "id": "critical-high-sla-items",
+    "name": "Vipr Critical and High Findings Within SLA (Item Level)",
+    "editor": "Advanced",
+    "description": "No open critical or high finding is past its SLA date, checked finding by finding.",
+    "controls": [
+      {
+        "id": "DCF-18",
+        "name": "Vulnerability Scans"
+      },
+      {
+        "id": "DCF-160",
+        "name": "Service Level Agreements (SLAs) for Security"
+      }
+    ],
+    "filter": {
+      "mode": "inclusion",
+      "evaluator": {
+        "all": [
+          {
+            "fact": "recordType",
+            "operator": "equal",
+            "value": "findingPartition"
+          },
+          {
+            "fact": "severity",
+            "operator": "in",
+            "value": [
+              "critical",
+              "high"
+            ]
+          }
+        ]
+      }
+    },
+    "condition": {
+      "all": [
+        {
+          "fact": "sourceFresh",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "fact": "generatedAt",
+          "operator": "withinLastDays",
+          "value": 2
+        },
+        {
+          "fact": "findings",
+          "operator": "none",
+          "value": {
+            "all": [
+              {
+                "fact": "open",
+                "operator": "equal",
+                "value": true
+              },
+              {
+                "fact": "slaBreached",
+                "operator": "equal",
+                "value": true
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "critical-open-age",
+    "name": "Vipr Open Critical Findings Not Older Than 30 Days",
+    "editor": "Advanced",
+    "description": "No open critical finding was first seen more than 30 days ago.",
+    "controls": [
+      {
+        "id": "DCF-160",
+        "name": "Service Level Agreements (SLAs) for Security"
+      },
+      {
+        "id": "DCF-456",
+        "name": "Vulnerabilities Identified and Resolved"
+      }
+    ],
+    "filter": {
+      "mode": "inclusion",
+      "evaluator": {
+        "all": [
+          {
+            "fact": "recordType",
+            "operator": "equal",
+            "value": "findingPartition"
+          },
+          {
+            "fact": "severity",
+            "operator": "equal",
+            "value": "critical"
+          }
+        ]
+      }
+    },
+    "condition": {
+      "all": [
+        {
+          "fact": "sourceFresh",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "fact": "generatedAt",
+          "operator": "withinLastDays",
+          "value": 2
+        },
+        {
+          "fact": "findings",
+          "operator": "none",
+          "value": {
+            "all": [
+              {
+                "fact": "open",
+                "operator": "equal",
+                "value": true
+              },
+              {
+                "fact": "firstSeen",
+                "operator": "olderThanDays",
+                "value": 30
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "note": "The 30-day window is a placeholder; set the day count to the policy window."
+  }
+]

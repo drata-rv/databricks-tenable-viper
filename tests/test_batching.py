@@ -5,7 +5,7 @@ from unittest import mock
 import pytest
 import requests
 from helpers import flatten, sent
-from rules import evaluate, failing_items
+from rules import evaluate, offending_items
 
 from vipr_drata.batching import (DEFAULT_ASSET_PARTITIONS, DEFAULT_FINDING_PARTITIONS, SEVERITIES, auto_partitions, source_as_of, partition_of, build_records, finding_item, severity_of,
                                  parse_finding_partitions, size_of)
@@ -257,7 +257,7 @@ def test_drata_style_rules_score_partitions_and_expose_the_failing_items():
     assert sorted(ids(scoped)) == ["vipr-findings-critical-001", "vipr-findings-high-001"]
     verdict = {r["id"]: evaluate(SLA_TEST, r) for r in scoped}
     assert verdict == {"vipr-findings-critical-001": False, "vipr-findings-high-001": False}
-    assert [i["id"] for i in failing_items(SLA_TEST, scoped[0], "findings")] == ["f00002"]
+    assert [i["id"] for i in offending_items(SLA_TEST, scoped[0], "findings")] == ["f00002"]
     low = next(r for r in recs if r["id"] == "vipr-findings-low-001")
     assert evaluate(SLA_TEST, low) is False and not evaluate(SEVERITY_FILTER, low)
     assert evaluate(SLA_TEST, next(r for r in recs if r["id"] == "vipr-findings-medium-001")) is True

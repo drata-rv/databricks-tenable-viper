@@ -85,54 +85,38 @@ def parse_scale(raw):
 
 def build_parser():
     p = argparse.ArgumentParser(prog="vipr-drata")
-    p.add_argument("--workspace", default=_env_str("DATABRICKS_WORKSPACE", "test"), help="test|prod (Databricks source)")
+    p.add_argument("--workspace", default=_env_str("DATABRICKS_WORKSPACE", "test"), help="Databricks source: test|prod")
     p.add_argument("--warehouse-id", default=os.getenv("DATABRICKS_WAREHOUSE_ID"))
     p.add_argument("--output-dir", default=_env_str("OUTPUT_DIR", "output"))
-    p.add_argument("--stale-days", type=int, default=_env_number("SCAN_STALE_DAYS", 7, int),
-                   help="days after which an asset's last_seen / Tenable last scan counts as stale (default 7)")
-    p.add_argument("--drata-prod", action="store_true", default=_env_bool("DRATA_PROD"),
-                   help="push to Drata prod tenant (separate credentials, no sandbox fallback)")
+    p.add_argument("--stale-days", type=int, default=_env_number("SCAN_STALE_DAYS", 7, int), help="asset staleness window, days")
+    p.add_argument("--drata-prod", action="store_true", default=_env_bool("DRATA_PROD"), help="push to the Drata prod tenant")
     p.add_argument("--push-mode", choices=["upsert", "session"], default=None,
-                   help="upsert (default): update only, never deletes | session: stage everything, then atomically replace "
-                        "the dataset, removing any record not in this run. Env: DRATA_PUSH_MODE")
-    p.add_argument("--scanner-tool", default=os.getenv("SCANNER_TOOL") or "tenable",
-                   help="substring of the tool_severity key compared with Vipr severity (default tenable)")
+                   help="upsert: update in place, never delete (default) | session: atomic replace. Env: DRATA_PUSH_MODE")
+    p.add_argument("--scanner-tool", default=os.getenv("SCANNER_TOOL") or "tenable", help="tool_severity key compared with Vipr severity")
     p.add_argument("--scanner-severity-map", default=os.getenv("SCANNER_SEVERITY_MAP", ""),
-                   help='JSON map of raw tool values to info|low|medium|high|critical, e.g. {"1":"low","2":"medium"}')
-    p.add_argument("--finding-partitions", default=os.getenv("FINDING_PARTITIONS", ""),
-                   help='JSON minimum partitions per severity, default {"critical":1,"high":2,"medium":4,"low":4,"info":1,"unknown":1}; '
-                        "grows automatically to fit MAX_RECORD_BYTES")
+                   help='JSON map of numeric tool values to severities, e.g. {"1":"low"}')
+    p.add_argument("--finding-partitions", default=os.getenv("FINDING_PARTITIONS", ""), help="JSON minimum partitions per severity")
     p.add_argument("--asset-partitions", type=int, default=_env_number("ASSET_PARTITIONS", DEFAULT_ASSET_PARTITIONS, int),
-                   help="minimum asset partitions (default 4); grows automatically to fit MAX_RECORD_BYTES")
+                   help="minimum asset partitions")
     p.add_argument("--closed-lookback-days", type=int, default=_env_number("CLOSED_LOOKBACK_DAYS", 90, int),
-                   help="closed findings older than this are left out (default 90)")
+                   help="omit closed findings older than this")
     p.add_argument("--max-source-age-days", type=int, default=_env_number("MAX_SOURCE_AGE_DAYS", 3, int),
-                   help="sourceFresh is false when the oldest source table is older (default 3)")
+                   help="sourceFresh is false beyond this age")
     p.add_argument("--max-record-bytes", type=int, default=_env_number("MAX_RECORD_BYTES", 4000000, int),
-                   help="abort before pushing if any record is larger (max 4500000; Drata limit is 5 MB)")
-    p.add_argument("--min-findings", type=int, default=_env_number("MIN_FINDINGS", 1, int),
-                   help="abort before pushing if fewer findings were extracted (default 1)")
-    p.add_argument("--min-assets", type=int, default=_env_number("MIN_ASSETS", 1, int),
-                   help="abort before pushing if fewer assets were extracted (default 1)")
-    p.add_argument("--local-rows", type=int, default=_env_number("LOCAL_ROWS", 0, int),
-                   help="with --local: generate this many synthetic findings (assets = rows/8) under <local-data>/scale")
+                   help="record size limit, at most 4500000")
+    p.add_argument("--min-findings", type=int, default=_env_number("MIN_FINDINGS", 1, int), help="abort below this finding count")
+    p.add_argument("--min-assets", type=int, default=_env_number("MIN_ASSETS", 1, int), help="abort below this asset count")
+    p.add_argument("--local-rows", type=int, default=_env_number("LOCAL_ROWS", 0, int), help="with --local: synthetic finding count")
     p.add_argument("--max-reject-ratio", type=float, default=_env_number("MAX_REJECT_RATIO", None, float),
-                   help="abort before pushing if rejected/total exceeds this (default 0.05; disabled with --local, "
-                        "whose sample data has deliberate rejects)")
-    p.add_argument("--allow-test-source-with-prod", action="store_true",
-                   help="allow *test_catalog* source tables together with --drata-prod")
-    p.add_argument("--local", action="store_true",
-                   help="local test mode: read tables from --local-data files, no Databricks, no push unless --push (sandbox only)")
-    p.add_argument("--local-data", default=_env_str("LOCAL_DATA_DIR", "local_data"),
-                   help="directory with findings/assets[/tenable_assets] .csv|.json; synthetic rows are generated "
-                        "when it has none (delete files to regenerate)")
-    p.add_argument("--push", action="store_true",
-                   help="with --local: also push the SYNTHETIC data (in session mode it replaces the whole resource)")
-    p.add_argument("--dry-run", action="store_true", help="extract+transform only, no push")
-    p.add_argument("--quiet", action="store_true", help="suppress INFO log lines; WARN and ERROR are always printed")
-    p.add_argument("--cancel-open-sessions", action="store_true",
-                   help="if an in-progress Drata session not created by this tool blocks session mode, cancel it too")
-    p.add_argument("--env", action="append", metavar="KEY=VALUE", help="set an environment variable (job parameters)")
+                   help="abort above this rejected/total ratio (default 0.05, off with --local)")
+    p.add_argument("--allow-test-source-with-prod", action="store_true", help="allow test_catalog tables with --drata-prod")
+    p.add_argument("--local", action="store_true", help="read --local-data files; no Databricks, no push unless --push")
+    p.add_argument("--local-data", default=_env_str("LOCAL_DATA_DIR", "local_data"), help="directory for local tables")
+    p.add_argument("--push", action="store_true", help="with --local: push the synthetic data")
+    p.add_argument("--dry-run", action="store_true", help="extract and transform only")
+    p.add_argument("--quiet", action="store_true", help="suppress INFO log lines")
+    p.add_argument("--cancel-open-sessions", action="store_true", help="cancel open Drata sessions this tool did not create")
+    p.add_argument("--env", action="append", metavar="KEY=VALUE", help="set an environment variable")
     return p
 
 
