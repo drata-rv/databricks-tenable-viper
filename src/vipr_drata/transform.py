@@ -44,7 +44,7 @@ def _parse_ts(v):
 
 
 def _iso(dt):
-    return dt.isoformat() if dt else None
+    return dt.replace(microsecond=0).isoformat() if dt else None
 
 
 _SEV_ALIASES = {"informational": "info", "none": "info", "moderate": "medium", "important": "high"}

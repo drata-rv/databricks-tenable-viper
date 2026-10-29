@@ -46,7 +46,7 @@
     "id": "critical-addressed",
     "name": "Vipr Critical Vulnerabilities Addressed",
     "editor": "Builder",
-    "description": "No open critical vulnerability is past its SLA date, and none has an unparseable SLA date.",
+    "description": "No open critical vulnerability is past its SLA date, and none has an undetermined SLA status.",
     "controls": [
       {
         "id": "DCF-18",
@@ -107,7 +107,7 @@
     "id": "high-addressed",
     "name": "Vipr High Vulnerabilities Addressed",
     "editor": "Builder",
-    "description": "No open high vulnerability is past its SLA date, and none has an unparseable SLA date.",
+    "description": "No open high vulnerability is past its SLA date, and none has an undetermined SLA status.",
     "controls": [
       {
         "id": "DCF-18",
@@ -168,7 +168,7 @@
     "id": "medium-low-within-sla",
     "name": "Vipr Medium and Low Vulnerabilities Within SLA",
     "editor": "Advanced",
-    "description": "No open medium or low vulnerability is past its SLA date, and none has an unparseable SLA date.",
+    "description": "No open medium or low vulnerability is past its SLA date, and none has an undetermined SLA status.",
     "controls": [
       {
         "id": "DCF-160",

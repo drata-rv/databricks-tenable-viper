@@ -99,7 +99,7 @@ def finding_counts(findings):
     open_f = [f for f in findings if f.get("open") is True]
     return {
         "openFindingCount": len(open_f), "openSlaBreachedCount": _count(open_f, "slaBreached"),
-        "openSlaUnknownCount": sum(1 for f in open_f if f.get("slaBreached") is None),
+        "openSlaUnknownCount": sum(1 for f in findings if f.get("open") is not False and f.get("slaBreached") is None),
         "openMissingTicketCount": _count(open_f, "missingTicket"),
         "openTicketUnknownCount": sum(1 for f in open_f if f.get("missingTicket") is None),
     }

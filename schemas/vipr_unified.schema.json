@@ -130,7 +130,7 @@
         "integer",
         "null"
       ],
-      "description": "Open findings with an unparseable SLA date"
+      "description": "Findings not known to be closed whose SLA status is undetermined"
     },
     "openMissingTicketCount": {
       "type": [

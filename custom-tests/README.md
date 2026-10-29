@@ -38,7 +38,7 @@ Records: S scanSummary, F findingPartition, A assetPartition.
 | `findingCount` | number | S | Findings submitted |
 | `openFindingCount` | number | SF | Open findings |
 | `openSlaBreachedCount` | number | SF | Open findings past SLA |
-| `openSlaUnknownCount` | number | SF | Open findings with an unparseable SLA date |
+| `openSlaUnknownCount` | number | SF | Findings not known to be closed whose SLA status is undetermined |
 | `openMissingTicketCount` | number | SF | Open findings without a ticket |
 | `openTicketUnknownCount` | number | SF | Open findings with undetermined ticket state |
 | `severityChangedCount` | number | S | Findings whose Vipr severity differs from the scanner |
@@ -143,7 +143,7 @@ Condition:
 
 - Controls: DCF-18 Vulnerability Scans; DCF-160 Service Level Agreements (SLAs) for Security; DCF-456 Vulnerabilities Identified and Resolved
 - Editor: Builder
-- Description: No open critical vulnerability is past its SLA date, and none has an unparseable SLA date.
+- Description: No open critical vulnerability is past its SLA date, and none has an undetermined SLA status.
 
 Filtering criteria, Inclusion:
 
@@ -169,7 +169,7 @@ Condition:
 
 - Controls: DCF-18 Vulnerability Scans; DCF-160 Service Level Agreements (SLAs) for Security; DCF-456 Vulnerabilities Identified and Resolved
 - Editor: Builder
-- Description: No open high vulnerability is past its SLA date, and none has an unparseable SLA date.
+- Description: No open high vulnerability is past its SLA date, and none has an undetermined SLA status.
 
 Filtering criteria, Inclusion:
 
@@ -195,7 +195,7 @@ Condition:
 
 - Controls: DCF-160 Service Level Agreements (SLAs) for Security; DCF-456 Vulnerabilities Identified and Resolved
 - Editor: Advanced
-- Description: No open medium or low vulnerability is past its SLA date, and none has an unparseable SLA date.
+- Description: No open medium or low vulnerability is past its SLA date, and none has an undetermined SLA status.
 
 Filtering criteria, Inclusion:
 

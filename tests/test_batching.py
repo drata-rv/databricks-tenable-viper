@@ -525,3 +525,12 @@ def test_a_foreign_blocking_session_is_only_cancelled_when_allowed(cancel_foreig
     assert (("created-in-the-ui/actions", {"action": "cancel"}) in _posted(sess)) is cancelled
     assert cancelled or "created-in-the-ui" in failed[0]["error"] and "--cancel-open-sessions" in failed[0]["error"]
     assert ("new/actions", {"action": "cancel"}) not in _posted(sess)
+
+
+def test_findings_with_unknown_open_state_count_as_sla_unknown_not_as_compliant():
+    recs = build([F(1, viprSeverity="critical", open=None, slaBreached=None), F(2, viprSeverity="critical", open=False, slaBreached=None),
+                  F(3, viprSeverity="critical", slaBreached=None)], [A(1)], finding_partitions=dict(SMALL, critical=1))
+    flat = flatten(recs)
+    critical = next(r for r in recs if r["id"] == "vipr-findings-critical-001")
+    assert critical["openSlaUnknownCount"] == 2 and critical["openFindingCount"] == 1
+    assert flat["summary"]["openSlaUnknownCount"] == 2
