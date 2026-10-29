@@ -4,7 +4,7 @@ Databricks Vipr vulnerability tables to one Drata Custom Connection resource.
 
 ## Records
 
-A run submits a fixed set of records, never one per finding.
+A run submits batched records.
 
 | Record id | `recordType` | Content |
 |---|---|---|
