@@ -175,12 +175,13 @@ def test_closed_lookback_only_drops_old_closed_findings():
 def test_summary_counts():
     findings = [F(1), F(2, slaBreached=True), F(3, slaBreached=None), F(4, missingTicket=True),
                 F(5, missingTicket=None), F(6, open=False, slaBreached=True), F(7, severityChanged=True)]
-    assets = [A(1, viprLastSeenStale=True), A(2, tenableScanStale=True, tenableMatch="matched"),
+    assets = [A(1, viprLastSeenStale=True, isActive=False), A(2, tenableScanStale=True, tenableMatch="matched"),
               A(3, tenableMatch="ambiguous"), A(4, tenableMatch="no_data")]
     s = build(findings, assets, rejected=4)[0]
     assert (s["findingCount"], s["openFindingCount"], s["openSlaBreachedCount"], s["openSlaUnknownCount"]) == (7, 6, 1, 1)
     assert (s["openMissingTicketCount"], s["openTicketUnknownCount"], s["severityChangedCount"]) == (1, 1, 1)
-    assert (s["assetCount"], s["staleAssetCount"], s["tenableStaleAssetCount"], s["tenableUnmatchedAssetCount"]) == (4, 1, 1, 2)
+    assert (s["assetCount"], s["inactiveAssetCount"], s["staleAssetCount"]) == (4, 1, 1)
+    assert (s["tenableStaleAssetCount"], s["tenableUnmatchedAssetCount"]) == (1, 2)
     assert s["rejectedCount"] == 4 and s["findingPartitionCount"] == sum(SMALL.values()) and s["assetPartitionCount"] == 4
 
 

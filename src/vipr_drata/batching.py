@@ -107,6 +107,7 @@ def finding_counts(findings):
 
 def asset_counts(assets):
     return {
+        "inactiveAssetCount": sum(1 for a in assets if a.get("isActive") is False),
         "staleAssetCount": _count(assets, "viprLastSeenStale"), "tenableStaleAssetCount": _count(assets, "tenableScanStale"),
         "tenableUnmatchedAssetCount": sum(1 for a in assets if a.get("tenableMatch") in ("none", "ambiguous")),
     }

@@ -45,6 +45,7 @@ Records: S scanSummary, F findingPartition, A assetPartition.
 | `closedFindingsExcludedCount` | number | S | Closed findings older than the lookback, not submitted |
 | `rejectedCount` | number | S | Source rows rejected during transform |
 | `assetCount` | number | S | Assets submitted |
+| `inactiveAssetCount` | number | SA | Assets not marked active |
 | `staleAssetCount` | number | SA | Assets not seen by Vipr within SCAN_STALE_DAYS |
 | `tenableStaleAssetCount` | number | SA | Assets not scanned by Tenable within SCAN_STALE_DAYS |
 | `tenableUnmatchedAssetCount` | number | SA | Assets with no or ambiguous Tenable match |
