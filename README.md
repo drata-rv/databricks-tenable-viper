@@ -74,6 +74,8 @@ Before sending, the run reads the resource schema: it aborts (exit 2) when the s
 
 Set `DATABRICKS_{HOST,TOKEN,CLIENT_ID,CLIENT_SECRET}_{TEST|PROD}`, `DATABRICKS_WAREHOUSE_ID`, `VIPR_FINDINGS_TABLE` and `VIPR_ASSETS_TABLE` in `.env`.
 
+The wheel depends only on `databricks-sdk` and `requests`, both preinstalled on serverless, so no PyPI access is needed; `python-dotenv` is an extra for local `.env` loading.
+
 Deploy: bump `version` in `pyproject.toml`, then `databricks bundle deploy -t test|prod`. Prod needs `findings_table`, `assets_table`, `run_as` and `workspace.host`.
 
 `_profile.json` explains null fields: tool severity keys and values, asset join outcomes, null counts.
