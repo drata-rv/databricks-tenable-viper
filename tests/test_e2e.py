@@ -263,6 +263,11 @@ def test_run_exits_with_main_status(monkeypatch):
     assert e.value.code == 1
 
 
+def test_run_returns_without_exiting_on_success(monkeypatch):
+    monkeypatch.setattr(cli, "main", lambda: 0)
+    assert cli.run() is None
+
+
 def test_local_mode_runs_without_databricks(tmp_path):
     out = tmp_path / "out"
     with mock.patch.object(cli, "get_client_for_env") as gc, mock.patch.object(cli.DrataClient, "upsert") as up:

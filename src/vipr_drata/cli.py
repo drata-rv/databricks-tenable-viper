@@ -399,7 +399,9 @@ def _verify(dc, conn, res, records):
 
 
 def run():
-    sys.exit(main())
+    code = main()
+    if code:  # serverless reports SystemExit(0) as a failed task
+        sys.exit(code)
 
 
 if __name__ == "__main__":
