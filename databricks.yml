@@ -113,6 +113,7 @@ resources:
             client: "2"
             dependencies:
               - ./dist/*.whl
+              - ./vendor/*.whl
       schedule:
         quartz_cron_expression: "0 0 2 * * ?"
         timezone_id: UTC
