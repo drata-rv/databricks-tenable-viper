@@ -97,9 +97,11 @@ def _count(items, key):
 
 def finding_counts(findings):
     open_f = [f for f in findings if f.get("open") is True]
+    counted = [f for f in open_f if f.get("ignored") is not True]
     return {
-        "openFindingCount": len(open_f), "openSlaBreachedCount": _count(open_f, "slaBreached"),
-        "openSlaUnknownCount": sum(1 for f in findings if f.get("open") is not False and f.get("slaBreached") is None),
+        "openFindingCount": len(open_f), "openSlaBreachedCount": _count(counted, "slaBreached"),
+        "openSlaUnknownCount": sum(1 for f in findings if f.get("open") is not False and f.get("ignored") is not True
+                                   and f.get("slaBreached") is None),
         "openMissingTicketCount": _count(open_f, "missingTicket"),
         "openTicketUnknownCount": sum(1 for f in open_f if f.get("missingTicket") is None),
     }

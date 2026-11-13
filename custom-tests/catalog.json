@@ -46,7 +46,7 @@
     "id": "critical-addressed",
     "name": "Vipr Critical Vulnerabilities Addressed",
     "editor": "Builder",
-    "description": "No open critical vulnerability is past its SLA date, and none has an undetermined SLA status.",
+    "description": "No open critical vulnerability is past its SLA date, and none has an undetermined SLA status. Ignored findings are excluded.",
     "controls": [
       {
         "id": "DCF-18",
@@ -107,7 +107,7 @@
     "id": "high-addressed",
     "name": "Vipr High Vulnerabilities Addressed",
     "editor": "Builder",
-    "description": "No open high vulnerability is past its SLA date, and none has an undetermined SLA status.",
+    "description": "No open high vulnerability is past its SLA date, and none has an undetermined SLA status. Ignored findings are excluded.",
     "controls": [
       {
         "id": "DCF-18",
@@ -168,7 +168,7 @@
     "id": "medium-low-within-sla",
     "name": "Vipr Medium and Low Vulnerabilities Within SLA",
     "editor": "Advanced",
-    "description": "No open medium or low vulnerability is past its SLA date, and none has an undetermined SLA status.",
+    "description": "No open medium or low vulnerability is past its SLA date, and none has an undetermined SLA status. Ignored findings are excluded.",
     "controls": [
       {
         "id": "DCF-160",
@@ -332,7 +332,7 @@
     "id": "critical-high-sla-items",
     "name": "Vipr Critical and High Findings Within SLA (Item Level)",
     "editor": "Advanced",
-    "description": "No open critical or high finding is past its SLA date, checked finding by finding.",
+    "description": "No open critical or high finding is past its SLA date, checked finding by finding. Ignored findings are excluded.",
     "controls": [
       {
         "id": "DCF-18",
@@ -379,6 +379,11 @@
                 "fact": "slaBreached",
                 "operator": "equal",
                 "value": true
+              },
+              {
+                "fact": "ignored",
+                "operator": "notEqual",
+                "value": true
               }
             ]
           }
@@ -400,7 +405,7 @@
     "id": "critical-open-age",
     "name": "Vipr Open Critical Findings Not Older Than 30 Days",
     "editor": "Advanced",
-    "description": "No open critical finding was first seen more than 30 days ago.",
+    "description": "No open critical finding was first seen more than 30 days ago. Ignored findings are excluded.",
     "controls": [
       {
         "id": "DCF-160",
@@ -444,6 +449,11 @@
                 "fact": "firstSeen",
                 "operator": "olderThanDays",
                 "value": 30
+              },
+              {
+                "fact": "ignored",
+                "operator": "notEqual",
+                "value": true
               }
             ]
           }

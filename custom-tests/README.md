@@ -146,7 +146,7 @@ Condition:
 
 - Controls: DCF-18 Vulnerability Scans; DCF-160 Service Level Agreements (SLAs) for Security; DCF-456 Vulnerabilities Identified and Resolved
 - Editor: Builder
-- Description: No open critical vulnerability is past its SLA date, and none has an undetermined SLA status.
+- Description: No open critical vulnerability is past its SLA date, and none has an undetermined SLA status. Ignored findings are excluded.
 
 Filtering criteria, Inclusion:
 
@@ -172,7 +172,7 @@ Condition:
 
 - Controls: DCF-18 Vulnerability Scans; DCF-160 Service Level Agreements (SLAs) for Security; DCF-456 Vulnerabilities Identified and Resolved
 - Editor: Builder
-- Description: No open high vulnerability is past its SLA date, and none has an undetermined SLA status.
+- Description: No open high vulnerability is past its SLA date, and none has an undetermined SLA status. Ignored findings are excluded.
 
 Filtering criteria, Inclusion:
 
@@ -198,7 +198,7 @@ Condition:
 
 - Controls: DCF-160 Service Level Agreements (SLAs) for Security; DCF-456 Vulnerabilities Identified and Resolved
 - Editor: Advanced
-- Description: No open medium or low vulnerability is past its SLA date, and none has an undetermined SLA status.
+- Description: No open medium or low vulnerability is past its SLA date, and none has an undetermined SLA status. Ignored findings are excluded.
 
 Filtering criteria, Inclusion:
 
@@ -275,7 +275,7 @@ Condition:
 
 - Controls: DCF-18 Vulnerability Scans; DCF-160 Service Level Agreements (SLAs) for Security
 - Editor: Advanced
-- Description: No open critical or high finding is past its SLA date, checked finding by finding.
+- Description: No open critical or high finding is past its SLA date, checked finding by finding. Ignored findings are excluded.
 
 Filtering criteria, Inclusion:
 
@@ -292,7 +292,8 @@ Condition:
 {"all":[
   {"fact":"findings","operator":"none","value":{"all":[
     {"fact":"open","operator":"equal","value":true},
-    {"fact":"slaBreached","operator":"equal","value":true}
+    {"fact":"slaBreached","operator":"equal","value":true},
+    {"fact":"ignored","operator":"notEqual","value":true}
   ]}},
   {"fact":"sourceFresh","operator":"equal","value":true},
   {"fact":"generatedAt","operator":"withinLastDays","value":2}
@@ -303,7 +304,7 @@ Condition:
 
 - Controls: DCF-160 Service Level Agreements (SLAs) for Security; DCF-456 Vulnerabilities Identified and Resolved
 - Editor: Advanced
-- Description: No open critical finding was first seen more than 30 days ago.
+- Description: No open critical finding was first seen more than 30 days ago. Ignored findings are excluded.
 - Note: The 30-day window is a placeholder; set the day count to the policy window.
 
 Filtering criteria, Inclusion:
@@ -321,7 +322,8 @@ Condition:
 {"all":[
   {"fact":"findings","operator":"none","value":{"all":[
     {"fact":"open","operator":"equal","value":true},
-    {"fact":"firstSeen","operator":"olderThanDays","value":30}
+    {"fact":"firstSeen","operator":"olderThanDays","value":30},
+    {"fact":"ignored","operator":"notEqual","value":true}
   ]}},
   {"fact":"sourceFresh","operator":"equal","value":true},
   {"fact":"generatedAt","operator":"withinLastDays","value":2}

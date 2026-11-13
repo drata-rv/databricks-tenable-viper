@@ -172,6 +172,13 @@ def test_closed_lookback_only_drops_old_closed_findings():
     assert len(flatten(build(findings, [], closed_lookback_days=100000))["findings"]) == 5
 
 
+def test_ignored_findings_do_not_count_toward_sla():
+    findings = [F(1, slaBreached=True), F(2, slaBreached=True, ignored=True), F(3, slaBreached=None, ignored=True),
+                F(4, slaBreached=None, ignored=None)]
+    s = build(findings, [])[0]
+    assert (s["openFindingCount"], s["openSlaBreachedCount"], s["openSlaUnknownCount"]) == (4, 1, 1)
+
+
 def test_summary_counts():
     findings = [F(1), F(2, slaBreached=True), F(3, slaBreached=None), F(4, missingTicket=True),
                 F(5, missingTicket=None), F(6, open=False, slaBreached=True), F(7, severityChanged=True)]

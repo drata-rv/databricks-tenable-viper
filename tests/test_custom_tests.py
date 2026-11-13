@@ -85,6 +85,16 @@ def test_tests_score_the_expected_partitions_on_mixed_data(test_id, expected):
     assert scoped(BY_ID[test_id], MIXED) == expected
 
 
+def test_ignored_findings_are_not_sla_violations():
+    old = (NOW - timedelta(days=60)).isoformat()
+    data = records([F(1, "critical", slaBreached=True, ignored=True, firstSeen=old),
+                    F(2, "high", slaBreached=None, ignored=True)], [{"id": "a1", "viprLastSeenStale": False}])
+    for tid in ("critical-addressed", "high-addressed", "critical-high-sla-items", "critical-open-age"):
+        assert all(scoped(BY_ID[tid], data).values()), tid
+    live = records([F(1, "critical", slaBreached=True, ignored=False)], [{"id": "a1", "viprLastSeenStale": False}])
+    assert scoped(BY_ID["critical-high-sla-items"], live)["findings-critical-001"] is False
+
+
 def test_every_test_passes_on_clean_fresh_data_and_fails_on_stale_data():
     stale = records([F(1, "critical"), F(2, "high"), F(3, "medium"), F(4, "low")],
                     [{"id": "a1", "viprLastSeenStale": False}], age_days=30)
