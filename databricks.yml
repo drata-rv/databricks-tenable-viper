@@ -44,6 +44,12 @@ variables:
     default: ""
   tenable_assets_table:
     default: ""
+  schedule_cron:
+    default: "0 0 20 * * ?"
+  schedule_timezone:
+    default: America/New_York
+  schedule_status:
+    default: PAUSED
 
 artifacts:
   vipr_drata:
@@ -115,9 +121,9 @@ resources:
               - ./dist/*.whl
               - ./vendor/*.whl
       schedule:
-        quartz_cron_expression: "0 0 2 * * ?"
-        timezone_id: UTC
-        pause_status: PAUSED
+        quartz_cron_expression: ${var.schedule_cron}
+        timezone_id: ${var.schedule_timezone}
+        pause_status: ${var.schedule_status}
 
     smoke_test:
       name: vipr-drata-smoke-${bundle.target}
@@ -135,6 +141,8 @@ targets:
   test:
     default: true
     mode: development
+    presets:
+      trigger_pause_status: UNPAUSED
     variables:
       findings_table: si_test_catalog.nw_harmonized_sensitive.t_vipr_all_findings
       assets_table: si_test_catalog.nw_harmonized_sensitive.t_vipr_all_assets
