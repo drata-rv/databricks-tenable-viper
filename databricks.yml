@@ -141,9 +141,8 @@ targets:
   test:
     default: true
     mode: development
-    presets:
-      trigger_pause_status: UNPAUSED
     variables:
+      schedule_status: UNPAUSED
       findings_table: si_test_catalog.nw_harmonized_sensitive.t_vipr_all_findings
       assets_table: si_test_catalog.nw_harmonized_sensitive.t_vipr_all_assets
   prod:
