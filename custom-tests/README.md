@@ -161,10 +161,10 @@ Condition:
 
 ```json
 {"all":[
-  {"fact":"sourceFresh","operator":"equal","value":true},
-  {"fact":"generatedAt","operator":"withinLastDays","value":2},
   {"fact":"openSlaBreachedCount","operator":"equal","value":0},
-  {"fact":"openSlaUnknownCount","operator":"equal","value":0}
+  {"fact":"openSlaUnknownCount","operator":"equal","value":0},
+  {"fact":"sourceFresh","operator":"equal","value":true},
+  {"fact":"generatedAt","operator":"withinLastDays","value":2}
 ]}
 ```
 
@@ -187,10 +187,10 @@ Condition:
 
 ```json
 {"all":[
-  {"fact":"sourceFresh","operator":"equal","value":true},
-  {"fact":"generatedAt","operator":"withinLastDays","value":2},
   {"fact":"openSlaBreachedCount","operator":"equal","value":0},
-  {"fact":"openSlaUnknownCount","operator":"equal","value":0}
+  {"fact":"openSlaUnknownCount","operator":"equal","value":0},
+  {"fact":"sourceFresh","operator":"equal","value":true},
+  {"fact":"generatedAt","operator":"withinLastDays","value":2}
 ]}
 ```
 
@@ -213,10 +213,10 @@ Condition:
 
 ```json
 {"all":[
-  {"fact":"sourceFresh","operator":"equal","value":true},
-  {"fact":"generatedAt","operator":"withinLastDays","value":2},
   {"fact":"openSlaBreachedCount","operator":"equal","value":0},
-  {"fact":"openSlaUnknownCount","operator":"equal","value":0}
+  {"fact":"openSlaUnknownCount","operator":"equal","value":0},
+  {"fact":"sourceFresh","operator":"equal","value":true},
+  {"fact":"generatedAt","operator":"withinLastDays","value":2}
 ]}
 ```
 
@@ -239,10 +239,10 @@ Condition:
 
 ```json
 {"all":[
-  {"fact":"sourceFresh","operator":"equal","value":true},
-  {"fact":"generatedAt","operator":"withinLastDays","value":2},
   {"fact":"openMissingTicketCount","operator":"equal","value":0},
-  {"fact":"openTicketUnknownCount","operator":"equal","value":0}
+  {"fact":"openTicketUnknownCount","operator":"equal","value":0},
+  {"fact":"sourceFresh","operator":"equal","value":true},
+  {"fact":"generatedAt","operator":"withinLastDays","value":2}
 ]}
 ```
 
@@ -265,9 +265,9 @@ Condition:
 
 ```json
 {"all":[
+  {"fact":"staleAssetCount","operator":"equal","value":0},
   {"fact":"sourceFresh","operator":"equal","value":true},
-  {"fact":"generatedAt","operator":"withinLastDays","value":2},
-  {"fact":"staleAssetCount","operator":"equal","value":0}
+  {"fact":"generatedAt","operator":"withinLastDays","value":2}
 ]}
 ```
 
@@ -290,12 +290,12 @@ Condition:
 
 ```json
 {"all":[
-  {"fact":"sourceFresh","operator":"equal","value":true},
-  {"fact":"generatedAt","operator":"withinLastDays","value":2},
   {"fact":"findings","operator":"none","value":{"all":[
     {"fact":"open","operator":"equal","value":true},
     {"fact":"slaBreached","operator":"equal","value":true}
-  ]}}
+  ]}},
+  {"fact":"sourceFresh","operator":"equal","value":true},
+  {"fact":"generatedAt","operator":"withinLastDays","value":2}
 ]}
 ```
 
@@ -319,11 +319,11 @@ Condition:
 
 ```json
 {"all":[
-  {"fact":"sourceFresh","operator":"equal","value":true},
-  {"fact":"generatedAt","operator":"withinLastDays","value":2},
   {"fact":"findings","operator":"none","value":{"all":[
     {"fact":"open","operator":"equal","value":true},
     {"fact":"firstSeen","operator":"olderThanDays","value":30}
-  ]}}
+  ]}},
+  {"fact":"sourceFresh","operator":"equal","value":true},
+  {"fact":"generatedAt","operator":"withinLastDays","value":2}
 ]}
 ```

@@ -81,16 +81,6 @@
     "condition": {
       "all": [
         {
-          "fact": "sourceFresh",
-          "operator": "equal",
-          "value": true
-        },
-        {
-          "fact": "generatedAt",
-          "operator": "withinLastDays",
-          "value": 2
-        },
-        {
           "fact": "openSlaBreachedCount",
           "operator": "equal",
           "value": 0
@@ -99,6 +89,16 @@
           "fact": "openSlaUnknownCount",
           "operator": "equal",
           "value": 0
+        },
+        {
+          "fact": "sourceFresh",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "fact": "generatedAt",
+          "operator": "withinLastDays",
+          "value": 2
         }
       ]
     }
@@ -142,16 +142,6 @@
     "condition": {
       "all": [
         {
-          "fact": "sourceFresh",
-          "operator": "equal",
-          "value": true
-        },
-        {
-          "fact": "generatedAt",
-          "operator": "withinLastDays",
-          "value": 2
-        },
-        {
           "fact": "openSlaBreachedCount",
           "operator": "equal",
           "value": 0
@@ -160,6 +150,16 @@
           "fact": "openSlaUnknownCount",
           "operator": "equal",
           "value": 0
+        },
+        {
+          "fact": "sourceFresh",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "fact": "generatedAt",
+          "operator": "withinLastDays",
+          "value": 2
         }
       ]
     }
@@ -202,16 +202,6 @@
     "condition": {
       "all": [
         {
-          "fact": "sourceFresh",
-          "operator": "equal",
-          "value": true
-        },
-        {
-          "fact": "generatedAt",
-          "operator": "withinLastDays",
-          "value": 2
-        },
-        {
           "fact": "openSlaBreachedCount",
           "operator": "equal",
           "value": 0
@@ -220,6 +210,16 @@
           "fact": "openSlaUnknownCount",
           "operator": "equal",
           "value": 0
+        },
+        {
+          "fact": "sourceFresh",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "fact": "generatedAt",
+          "operator": "withinLastDays",
+          "value": 2
         }
       ]
     }
@@ -262,16 +262,6 @@
     "condition": {
       "all": [
         {
-          "fact": "sourceFresh",
-          "operator": "equal",
-          "value": true
-        },
-        {
-          "fact": "generatedAt",
-          "operator": "withinLastDays",
-          "value": 2
-        },
-        {
           "fact": "openMissingTicketCount",
           "operator": "equal",
           "value": 0
@@ -280,6 +270,16 @@
           "fact": "openTicketUnknownCount",
           "operator": "equal",
           "value": 0
+        },
+        {
+          "fact": "sourceFresh",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "fact": "generatedAt",
+          "operator": "withinLastDays",
+          "value": 2
         }
       ]
     }
@@ -310,6 +310,11 @@
     "condition": {
       "all": [
         {
+          "fact": "staleAssetCount",
+          "operator": "equal",
+          "value": 0
+        },
+        {
           "fact": "sourceFresh",
           "operator": "equal",
           "value": true
@@ -318,11 +323,6 @@
           "fact": "generatedAt",
           "operator": "withinLastDays",
           "value": 2
-        },
-        {
-          "fact": "staleAssetCount",
-          "operator": "equal",
-          "value": 0
         }
       ]
     },
@@ -366,16 +366,6 @@
     "condition": {
       "all": [
         {
-          "fact": "sourceFresh",
-          "operator": "equal",
-          "value": true
-        },
-        {
-          "fact": "generatedAt",
-          "operator": "withinLastDays",
-          "value": 2
-        },
-        {
           "fact": "findings",
           "operator": "none",
           "value": {
@@ -392,6 +382,16 @@
               }
             ]
           }
+        },
+        {
+          "fact": "sourceFresh",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "fact": "generatedAt",
+          "operator": "withinLastDays",
+          "value": 2
         }
       ]
     }
@@ -431,16 +431,6 @@
     "condition": {
       "all": [
         {
-          "fact": "sourceFresh",
-          "operator": "equal",
-          "value": true
-        },
-        {
-          "fact": "generatedAt",
-          "operator": "withinLastDays",
-          "value": 2
-        },
-        {
           "fact": "findings",
           "operator": "none",
           "value": {
@@ -457,6 +447,16 @@
               }
             ]
           }
+        },
+        {
+          "fact": "sourceFresh",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "fact": "generatedAt",
+          "operator": "withinLastDays",
+          "value": 2
         }
       ]
     },
