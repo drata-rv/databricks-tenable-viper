@@ -172,11 +172,14 @@ def test_closed_lookback_only_drops_old_closed_findings():
     assert len(flatten(build(findings, [], closed_lookback_days=100000))["findings"]) == 5
 
 
-def test_ignored_findings_do_not_count_toward_sla():
+def test_ignored_findings_are_not_submitted():
     findings = [F(1, slaBreached=True), F(2, slaBreached=True, ignored=True), F(3, slaBreached=None, ignored=True),
-                F(4, slaBreached=None, ignored=None)]
-    s = build(findings, [])[0]
-    assert (s["openFindingCount"], s["openSlaBreachedCount"], s["openSlaUnknownCount"]) == (4, 1, 1)
+                F(4, slaBreached=None, ignored=None), F(5, open=False, ignored=True)]
+    recs = build(findings, [])
+    s = recs[0]
+    assert (s["findingCount"], s["openFindingCount"], s["openSlaBreachedCount"], s["openSlaUnknownCount"]) == (2, 2, 1, 1)
+    assert s["ignoredFindingsExcludedCount"] == 3
+    assert sorted(flatten(recs)["findings"]) == ["f00001", "f00004"]
 
 
 def test_summary_counts():

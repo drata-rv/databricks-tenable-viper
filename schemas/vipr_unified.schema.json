@@ -136,6 +136,12 @@
         "null"
       ]
     },
+    "ignoredFindingsExcludedCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "rejectedCount": {
       "type": [
         "integer",

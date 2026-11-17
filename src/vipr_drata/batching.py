@@ -97,11 +97,9 @@ def _count(items, key):
 
 def finding_counts(findings):
     open_f = [f for f in findings if f.get("open") is True]
-    counted = [f for f in open_f if f.get("ignored") is not True]
     return {
-        "openFindingCount": len(open_f), "openSlaBreachedCount": _count(counted, "slaBreached"),
-        "openSlaUnknownCount": sum(1 for f in findings if f.get("open") is not False and f.get("ignored") is not True
-                                   and f.get("slaBreached") is None),
+        "openFindingCount": len(open_f), "openSlaBreachedCount": _count(open_f, "slaBreached"),
+        "openSlaUnknownCount": sum(1 for f in findings if f.get("open") is not False and f.get("slaBreached") is None),
         "openMissingTicketCount": _count(open_f, "missingTicket"),
         "openTicketUnknownCount": sum(1 for f in open_f if f.get("missingTicket") is None),
     }
@@ -125,7 +123,8 @@ def freshness(now, source_dates, max_source_age_days):
     }
 
 
-def _summary(findings, assets, *, stamp, source_dates, finding_partitions, asset_partitions, closed_excluded, rejected):
+def _summary(findings, assets, *, stamp, source_dates, finding_partitions, asset_partitions, closed_excluded, ignored_excluded,
+             rejected):
     return {
         "id": "%s-summary" % RECORD_PREFIX, "recordType": "scanSummary", "displayName": "Vipr Scan Summary", **stamp,
         "findingsSourceAsOf": _iso(source_dates.get("findings")), "assetsSourceAsOf": _iso(source_dates.get("assets")),
@@ -133,7 +132,8 @@ def _summary(findings, assets, *, stamp, source_dates, finding_partitions, asset
         "findingPartitionCount": sum(finding_partitions.values()), "assetPartitionCount": asset_partitions,
         "findingCount": len(findings), **finding_counts(findings),
         "severityChangedCount": _count(findings, "severityChanged"),
-        "closedFindingsExcludedCount": closed_excluded, "rejectedCount": rejected,
+        "closedFindingsExcludedCount": closed_excluded, "ignoredFindingsExcludedCount": ignored_excluded,
+        "rejectedCount": rejected,
         "assetCount": len(assets), **asset_counts(assets),
     }
 
@@ -164,8 +164,11 @@ def build_records(findings, assets, *, now, finding_partitions=None, asset_parti
     if asset_partitions < 1 or any(n < 1 for n in finding_partitions.values()):
         raise ConfigError("partition counts must be >= 1")
     cutoff = now - timedelta(days=closed_lookback_days)
-    kept, excluded = [], 0
+    kept, excluded, ignored = [], 0, 0
     for f in findings:
+        if f.get("ignored") is True:
+            ignored += 1
+            continue
         closed = _parse_ts(f.get("closedAt"))
         if f.get("open") is False and closed is not None and closed < cutoff:
             excluded += 1
@@ -183,7 +186,7 @@ def build_records(findings, assets, *, now, finding_partitions=None, asset_parti
     stamp = freshness(now, source_dates or {}, max_source_age_days)
     records = [_summary(kept, asset_items, stamp=stamp, source_dates=source_dates or {},
                         finding_partitions=finding_partitions, asset_partitions=asset_partitions,
-                        closed_excluded=excluded, rejected=rejected)]
+                        closed_excluded=excluded, ignored_excluded=ignored, rejected=rejected)]
     for sev in SEVERITIES:
         n = finding_partitions.get(sev, DEFAULT_FINDING_PARTITIONS[sev])
         for i, grp in enumerate(_group(by_severity[sev], n), 1):
