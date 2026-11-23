@@ -17,18 +17,18 @@ Each record is one result. A failing partition fails the test; records outside t
 
 ## Facts
 
-Records: S scanSummary, F findingPartition, A assetPartition.
+Records: S scanSummary, I ignoreSummary, F findingPartition, A assetPartition.
 
 | Fact | Type | Records |
 |---|---|---|
-| `id` | string | SFA |
-| `recordType` | string | SFA |
-| `displayName` | string | SFA |
+| `id` | string | SIFA |
+| `recordType` | string | SIFA |
+| `displayName` | string | SIFA |
 | `severity` | string | F |
-| `generatedAt` | string | SFA |
-| `sourceAsOf` | string | SFA |
-| `sourceAgeDays` | number | SFA |
-| `sourceFresh` | boolean | SFA |
+| `generatedAt` | string | SIFA |
+| `sourceAsOf` | string | SIFA |
+| `sourceAgeDays` | number | SIFA |
+| `sourceFresh` | boolean | SIFA |
 | `findingsSourceAsOf` | string | S |
 | `assetsSourceAsOf` | string | S |
 | `tenableSourceAsOf` | string | S |
@@ -52,8 +52,16 @@ Records: S scanSummary, F findingPartition, A assetPartition.
 | `staleAssetCount` | number | SA |
 | `tenableStaleAssetCount` | number | SA |
 | `tenableUnmatchedAssetCount` | number | SA |
+| `ignoredCount` | number | I |
+| `ignoredByRuleCount` | number | I |
+| `ignoredManualCount` | number | I |
+| `ignoredWithoutSourceCount` | number | I |
+| `ignoredWithoutOwnerCount` | number | I |
+| `manualIgnoreWithoutRationaleCount` | number | I |
 | `findings` | array | F |
 | `assets` | array | A |
+| `ignoreRules` | array | I |
+| `manualIgnores` | array | I |
 
 `findings[]` items (Advanced editor, nested rule):
 
@@ -98,6 +106,24 @@ Records: S scanSummary, F findingPartition, A assetPartition.
 | `tenableScanStale` | boolean |
 | `tenableLastAuthenticatedScan` | string |
 
+`ignoreRules[]` items (Advanced editor, nested rule):
+
+| Fact | Type |
+|---|---|
+| `name` | string |
+| `findingCount` | number |
+
+`manualIgnores[]` items (Advanced editor, nested rule):
+
+| Fact | Type |
+|---|---|
+| `id` | string |
+| `displayId` | string |
+| `ignoredBy` | string |
+| `hasRationale` | boolean |
+| `hasOwner` | boolean |
+| `assetId` | string |
+
 ## Operators
 
 | Field type | Operators |
@@ -124,7 +150,7 @@ Limits: 7 conditions and 70 lines per code block; conditions inside a nested arr
 - Controls: DCF-18 Vulnerability Scans; DCF-455 Quarterly Internal Vulnerability Scans
 - Editor: Builder
 - Description: Vipr vulnerability data was refreshed within the allowed age and the nightly sync ran in the last 2 days.
-- Note: Tests 2-8 also require a sync within the last 2 days, so a stopped job fails them.
+- Note: Only this test checks freshness; the others score the records as delivered.
 
 Filtering criteria, Inclusion:
 
@@ -163,9 +189,7 @@ Condition:
 ```json
 {"all":[
   {"fact":"openSlaBreachedCount","operator":"equal","value":0},
-  {"fact":"openSlaUnknownCount","operator":"equal","value":0},
-  {"fact":"sourceFresh","operator":"equal","value":true},
-  {"fact":"generatedAt","operator":"withinLastDays","value":2}
+  {"fact":"openSlaUnknownCount","operator":"equal","value":0}
 ]}
 ```
 
@@ -189,9 +213,7 @@ Condition:
 ```json
 {"all":[
   {"fact":"openSlaBreachedCount","operator":"equal","value":0},
-  {"fact":"openSlaUnknownCount","operator":"equal","value":0},
-  {"fact":"sourceFresh","operator":"equal","value":true},
-  {"fact":"generatedAt","operator":"withinLastDays","value":2}
+  {"fact":"openSlaUnknownCount","operator":"equal","value":0}
 ]}
 ```
 
@@ -215,9 +237,7 @@ Condition:
 ```json
 {"all":[
   {"fact":"openSlaBreachedCount","operator":"equal","value":0},
-  {"fact":"openSlaUnknownCount","operator":"equal","value":0},
-  {"fact":"sourceFresh","operator":"equal","value":true},
-  {"fact":"generatedAt","operator":"withinLastDays","value":2}
+  {"fact":"openSlaUnknownCount","operator":"equal","value":0}
 ]}
 ```
 
@@ -241,9 +261,7 @@ Condition:
 ```json
 {"all":[
   {"fact":"openMissingTicketCount","operator":"equal","value":0},
-  {"fact":"openTicketUnknownCount","operator":"equal","value":0},
-  {"fact":"sourceFresh","operator":"equal","value":true},
-  {"fact":"generatedAt","operator":"withinLastDays","value":2}
+  {"fact":"openTicketUnknownCount","operator":"equal","value":0}
 ]}
 ```
 
@@ -266,9 +284,7 @@ Condition:
 
 ```json
 {"all":[
-  {"fact":"staleAssetCount","operator":"equal","value":0},
-  {"fact":"sourceFresh","operator":"equal","value":true},
-  {"fact":"generatedAt","operator":"withinLastDays","value":2}
+  {"fact":"staleAssetCount","operator":"equal","value":0}
 ]}
 ```
 
@@ -294,9 +310,7 @@ Condition:
   {"fact":"findings","operator":"none","value":{"all":[
     {"fact":"open","operator":"equal","value":true},
     {"fact":"slaBreached","operator":"equal","value":true}
-  ]}},
-  {"fact":"sourceFresh","operator":"equal","value":true},
-  {"fact":"generatedAt","operator":"withinLastDays","value":2}
+  ]}}
 ]}
 ```
 
@@ -323,8 +337,77 @@ Condition:
   {"fact":"findings","operator":"none","value":{"all":[
     {"fact":"open","operator":"equal","value":true},
     {"fact":"firstSeen","operator":"olderThanDays","value":30}
+  ]}}
+]}
+```
+
+### 9. Vipr Ignored Findings Have a Recorded Source
+
+- Controls: None (diagnostic)
+- Editor: Builder
+- Description: Every ignored finding names the automation rule or person that ignored it.
+- Note: Diagnostic, not a compliance test: a failure means Vipr holds an ignore with no recorded source. The two tests below do not count those findings.
+
+Filtering criteria, Inclusion:
+
+```json
+{"all":[
+  {"fact":"recordType","operator":"equal","value":"ignoreSummary"}
+]}
+```
+
+Condition:
+
+```json
+{"all":[
+  {"fact":"ignoredWithoutSourceCount","operator":"equal","value":0}
+]}
+```
+
+### 10. Vipr Ignored Findings Have an Owner
+
+- Controls: DCF-15 Name to confirm in tenant; DCF-17 Name to confirm in tenant; DCF-183 Name to confirm in tenant
+- Editor: Builder
+- Description: Every ignored finding with a recorded source has a remediation or security owner.
+
+Filtering criteria, Inclusion:
+
+```json
+{"all":[
+  {"fact":"recordType","operator":"equal","value":"ignoreSummary"}
+]}
+```
+
+Condition:
+
+```json
+{"all":[
+  {"fact":"ignoredWithoutOwnerCount","operator":"equal","value":0}
+]}
+```
+
+### 11. Vipr Manual Ignores Have a Rationale
+
+- Controls: DCF-15 Name to confirm in tenant; DCF-17 Name to confirm in tenant; DCF-183 Name to confirm in tenant
+- Editor: Advanced
+- Description: Every finding ignored by a person has a written rationale. An automation rule is its own rationale.
+- Note: The list holds the first 1000 manual ignores; the count covers all of them.
+
+Filtering criteria, Inclusion:
+
+```json
+{"all":[
+  {"fact":"recordType","operator":"equal","value":"ignoreSummary"}
+]}
+```
+
+Condition:
+
+```json
+{"all":[
+  {"fact":"manualIgnores","operator":"none","value":{"all":[
+    {"fact":"hasRationale","operator":"equal","value":false}
   ]}},
-  {"fact":"sourceFresh","operator":"equal","value":true},
-  {"fact":"generatedAt","operator":"withinLastDays","value":2}
+  {"fact":"manualIgnoreWithoutRationaleCount","operator":"equal","value":0}
 ]}
 ```

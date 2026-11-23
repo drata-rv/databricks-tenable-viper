@@ -63,7 +63,7 @@ def test_push_defaults_to_one_atomic_session_with_the_fixed_record_set(monkeypat
     (call,) = DC.return_value.replace_via_session.call_args_list
     assert call.args[:2] == (CONN, RES)
     ids = [r["id"] for r in call.args[2]]
-    assert ids[0] == "vipr-summary" and len(ids) == 1 + 13 + 4 and len(set(ids)) == len(ids)
+    assert ids[0] == "vipr-summary" and len(ids) == 2 + 13 + 4 and len(set(ids)) == len(ids)
     assert "vipr-findings-medium-004" in ids and "vipr-assets-004" in ids
     assert "drata target tenant=sandbox push_mode=session" in capsys.readouterr().out
 
@@ -73,7 +73,7 @@ def test_upsert_mode_sends_the_same_record_set_without_a_session(monkeypatch, tm
     assert rc == 0
     DC.return_value.replace_via_session.assert_not_called()
     (call,) = DC.return_value.upsert.call_args_list
-    assert len(call.args[2]) == 18
+    assert len(call.args[2]) == 19
 
 
 def test_push_mode_env_and_invalid_values(monkeypatch, tmp_path):
@@ -183,7 +183,7 @@ def test_sizing_settings_reach_the_records(monkeypatch, tmp_path):
     with mock.patch.object(cli, "get_client_for_env"), mock.patch("vipr_drata.etl.extract.run_sql", fake_run_sql):
         assert cli.main(args + ["--dry-run"]) == 0
     recs = json.load(open(tmp_path / "records.json"))
-    assert [r["id"] for r in recs] == ["vipr-summary", "vipr-findings-critical-001", "vipr-findings-high-001", "vipr-findings-medium-001",
+    assert [r["id"] for r in recs] == ["vipr-summary", "vipr-ignores", "vipr-findings-critical-001", "vipr-findings-high-001", "vipr-findings-medium-001",
                                        "vipr-findings-low-001", "vipr-findings-low-002", "vipr-findings-info-001", "vipr-findings-unknown-001",
                                        "vipr-assets-001", "vipr-assets-002", "vipr-assets-003"]
     assert recs[0]["assetPartitionCount"] == 3 and recs[0]["sourceFresh"] is None
@@ -316,5 +316,5 @@ def test_local_rows_generates_scale_data_in_its_own_directory(tmp_path, capsys):
     assert cli.main(["--local", "--local-data", str(base), "--output-dir", str(tmp_path / "o"), "--local-rows", "2000"]) == 0
     assert (base / "scale" / "findings.csv").exists() and not (base / "findings.csv").exists()
     recs = json.load(open(tmp_path / "o" / "records.json"))
-    assert 18 <= len(recs) <= 40 and recs[0]["findingCount"] <= 2000 and recs[0]["assetCount"] == 250
+    assert 19 <= len(recs) <= 40 and recs[0]["findingCount"] <= 2000 and recs[0]["assetCount"] == 250
     assert "records=%d" % len(recs) in capsys.readouterr().out

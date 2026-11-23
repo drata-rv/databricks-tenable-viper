@@ -40,7 +40,7 @@
         }
       ]
     },
-    "note": "Tests 2-8 also require a sync within the last 2 days, so a stopped job fails them."
+    "note": "Only this test checks freshness; the others score the records as delivered."
   },
   {
     "id": "critical-addressed",
@@ -89,16 +89,6 @@
           "fact": "openSlaUnknownCount",
           "operator": "equal",
           "value": 0
-        },
-        {
-          "fact": "sourceFresh",
-          "operator": "equal",
-          "value": true
-        },
-        {
-          "fact": "generatedAt",
-          "operator": "withinLastDays",
-          "value": 2
         }
       ]
     }
@@ -150,16 +140,6 @@
           "fact": "openSlaUnknownCount",
           "operator": "equal",
           "value": 0
-        },
-        {
-          "fact": "sourceFresh",
-          "operator": "equal",
-          "value": true
-        },
-        {
-          "fact": "generatedAt",
-          "operator": "withinLastDays",
-          "value": 2
         }
       ]
     }
@@ -210,16 +190,6 @@
           "fact": "openSlaUnknownCount",
           "operator": "equal",
           "value": 0
-        },
-        {
-          "fact": "sourceFresh",
-          "operator": "equal",
-          "value": true
-        },
-        {
-          "fact": "generatedAt",
-          "operator": "withinLastDays",
-          "value": 2
         }
       ]
     }
@@ -270,16 +240,6 @@
           "fact": "openTicketUnknownCount",
           "operator": "equal",
           "value": 0
-        },
-        {
-          "fact": "sourceFresh",
-          "operator": "equal",
-          "value": true
-        },
-        {
-          "fact": "generatedAt",
-          "operator": "withinLastDays",
-          "value": 2
         }
       ]
     }
@@ -313,16 +273,6 @@
           "fact": "staleAssetCount",
           "operator": "equal",
           "value": 0
-        },
-        {
-          "fact": "sourceFresh",
-          "operator": "equal",
-          "value": true
-        },
-        {
-          "fact": "generatedAt",
-          "operator": "withinLastDays",
-          "value": 2
         }
       ]
     },
@@ -382,16 +332,6 @@
               }
             ]
           }
-        },
-        {
-          "fact": "sourceFresh",
-          "operator": "equal",
-          "value": true
-        },
-        {
-          "fact": "generatedAt",
-          "operator": "withinLastDays",
-          "value": 2
         }
       ]
     }
@@ -447,19 +387,135 @@
               }
             ]
           }
-        },
-        {
-          "fact": "sourceFresh",
-          "operator": "equal",
-          "value": true
-        },
-        {
-          "fact": "generatedAt",
-          "operator": "withinLastDays",
-          "value": 2
         }
       ]
     },
     "note": "The 30-day window is a placeholder; set the day count to the policy window."
+  },
+  {
+    "id": "ignored-source-recorded",
+    "name": "Vipr Ignored Findings Have a Recorded Source",
+    "editor": "Builder",
+    "diagnostic": true,
+    "description": "Every ignored finding names the automation rule or person that ignored it.",
+    "controls": [],
+    "filter": {
+      "mode": "inclusion",
+      "evaluator": {
+        "all": [
+          {
+            "fact": "recordType",
+            "operator": "equal",
+            "value": "ignoreSummary"
+          }
+        ]
+      }
+    },
+    "condition": {
+      "all": [
+        {
+          "fact": "ignoredWithoutSourceCount",
+          "operator": "equal",
+          "value": 0
+        }
+      ]
+    },
+    "note": "Diagnostic, not a compliance test: a failure means Vipr holds an ignore with no recorded source. The two tests below do not count those findings."
+  },
+  {
+    "id": "ignored-have-owner",
+    "name": "Vipr Ignored Findings Have an Owner",
+    "editor": "Builder",
+    "description": "Every ignored finding with a recorded source has a remediation or security owner.",
+    "controls": [
+      {
+        "id": "DCF-15",
+        "name": "Name to confirm in tenant"
+      },
+      {
+        "id": "DCF-17",
+        "name": "Name to confirm in tenant"
+      },
+      {
+        "id": "DCF-183",
+        "name": "Name to confirm in tenant"
+      }
+    ],
+    "filter": {
+      "mode": "inclusion",
+      "evaluator": {
+        "all": [
+          {
+            "fact": "recordType",
+            "operator": "equal",
+            "value": "ignoreSummary"
+          }
+        ]
+      }
+    },
+    "condition": {
+      "all": [
+        {
+          "fact": "ignoredWithoutOwnerCount",
+          "operator": "equal",
+          "value": 0
+        }
+      ]
+    }
+  },
+  {
+    "id": "manual-ignores-have-rationale",
+    "name": "Vipr Manual Ignores Have a Rationale",
+    "editor": "Advanced",
+    "description": "Every finding ignored by a person has a written rationale. An automation rule is its own rationale.",
+    "controls": [
+      {
+        "id": "DCF-15",
+        "name": "Name to confirm in tenant"
+      },
+      {
+        "id": "DCF-17",
+        "name": "Name to confirm in tenant"
+      },
+      {
+        "id": "DCF-183",
+        "name": "Name to confirm in tenant"
+      }
+    ],
+    "filter": {
+      "mode": "inclusion",
+      "evaluator": {
+        "all": [
+          {
+            "fact": "recordType",
+            "operator": "equal",
+            "value": "ignoreSummary"
+          }
+        ]
+      }
+    },
+    "condition": {
+      "all": [
+        {
+          "fact": "manualIgnores",
+          "operator": "none",
+          "value": {
+            "all": [
+              {
+                "fact": "hasRationale",
+                "operator": "equal",
+                "value": false
+              }
+            ]
+          }
+        },
+        {
+          "fact": "manualIgnoreWithoutRationaleCount",
+          "operator": "equal",
+          "value": 0
+        }
+      ]
+    },
+    "note": "The list holds the first 1000 manual ignores; the count covers all of them."
   }
 ]

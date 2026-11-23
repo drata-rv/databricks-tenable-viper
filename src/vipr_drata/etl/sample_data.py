@@ -20,7 +20,8 @@ def sample_rows(now=None):
     def f(i, sev, tool, **kw):
         row = {"silk_id": i, "finding_display_id": "VIPR-" + i[-3:], "display_name": "Finding " + i,
                "severity": sev, "tool_severity": J({"tenable": tool}) if tool else "{}", "open": "true",
-               "is_ignored": "false", "has_ticket": "true", "sla_date": _ts(now, -14),
+               "is_ignored": "false", "ignored_info": "{}", "remediation_owner": "owner@example.com",
+               "security_owner": None, "has_ticket": "true", "sla_date": _ts(now, -14),
                "first_seen": _ts(now, 40), "last_seen": _ts(now, 1), "closed_timestamp": None,
                "open_cves": J(["CVE-2026-0001"]), "asset_silk_id": "a-001"}
         row.update(kw)

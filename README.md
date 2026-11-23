@@ -9,10 +9,11 @@ A run submits batched records.
 | Record id | `recordType` | Content |
 |---|---|---|
 | `vipr-summary` | `scanSummary` | freshness, counts, source dates |
+| `vipr-ignores` | `ignoreSummary` | ignored findings by source: counts, `ignoreRules[]`, `manualIgnores[]` |
 | `vipr-findings-<severity>-NNN` | `findingPartition` | one severity, counts, `findings[]` |
 | `vipr-assets-NNN` | `assetPartition` | counts, `assets[]` |
 
-Severities: `critical high medium low info unknown`. NNN starts at 001. Items are assigned to a partition by a stable hash of their id. Empty partitions are still sent. Partition counts grow in powers of two to keep each record near half of `MAX_RECORD_BYTES`. Closed findings older than `CLOSED_LOOKBACK_DAYS` are omitted.
+Severities: `critical high medium low info unknown`. NNN starts at 001. Items are assigned to a partition by a stable hash of their id. Empty partitions are still sent. Partition counts grow in powers of two to keep each record near half of `MAX_RECORD_BYTES`. Closed findings older than `CLOSED_LOOKBACK_DAYS` are omitted. Ignored findings are not sent as items; `vipr-ignores` counts them by source (automation rule or person), owner and rationale, lists each rule with its count, and lists manual ignores (up to 1000).
 
 Every record carries `generatedAt`, `sourceAsOf`, `sourceAgeDays` and `sourceFresh`. Partition records carry scalar counts (`openSlaBreachedCount`, `openMissingTicketCount`, `staleAssetCount`) for the guided test builder; the arrays serve Advanced-editor tests.
 
@@ -68,7 +69,7 @@ Environment variables; blank means default. All reach the Databricks job.
 
 Resource id: `GET /public/v2/custom-connections/{id}?expand[]=customResources`, `customResources[0].id`.
 
-Before sending, the run reads the resource schema: it aborts (exit 2) when the schema requires fields the records lack, and warns (`schema facts_missing`) when facts used by the records are not declared, since tests cannot see them. Upgrading from 0.13 or earlier renames fields: edit the resource schema in Drata and paste the schema file before building tests, or use a new connection. Records from earlier versions are not removed by upsert; run once with `--push-mode session` or use a new connection.
+Before sending, the run reads the resource schema: it aborts (exit 2) when the schema requires fields the records lack, and warns (`schema facts_missing`) when facts used by the records are not declared, since tests cannot see them. Upgrading from 0.14 adds the `vipr-ignores` record and its fields: paste the schema file again. Upgrading from 0.13 or earlier renames fields: edit the resource schema in Drata and paste the schema file before building tests, or use a new connection. Records from earlier versions are not removed by upsert; run once with `--push-mode session` or use a new connection.
 
 ## Databricks
 

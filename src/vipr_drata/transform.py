@@ -74,6 +74,11 @@ def _parse_list(v):
         return [v]
 
 
+def _text(v):
+    s = "" if v is None else str(v).strip()
+    return None if s.lower() in ("", "null", "none") else s
+
+
 def _tri(v):
     return None if v is None or v == "" else is_true(v)
 
@@ -113,6 +118,7 @@ def extract_finding_features(finding, assets, now=None, scanner_tool="tenable", 
         breached = bool(is_open and sla and sla < now)
     closed_late = (closed_at > sla) if (is_open is False and sla and closed_at) else None
     asset = assets[0] if len(assets) == 1 else None
+    ignore = _parse_map(finding.get("ignored_info"))
     return {
         "id": finding.get("silk_id"),
         "display_id": finding.get("finding_display_id"),
@@ -127,6 +133,10 @@ def extract_finding_features(finding, assets, now=None, scanner_tool="tenable", 
         ),
         "open": is_open,
         "ignored": _tri(finding.get("is_ignored")),
+        "ignored_type": _text(ignore.get("assignment_type")),
+        "ignored_by": _text(ignore.get("assigned_by")),
+        "ignored_has_rationale": _text(ignore.get("details")) is not None,
+        "has_owner": _text(finding.get("remediation_owner")) is not None or _text(finding.get("security_owner")) is not None,
         "has_ticket": has_ticket,
         "missing_ticket": None if has_ticket is None or is_open is None else (is_open and not has_ticket),
         "sla_date": _iso(sla),
@@ -258,6 +268,8 @@ def format_finding_for_drata(f):
         "slaBreached": f["sla_breached"], "closedAfterSla": f["closed_after_sla"], "firstSeen": f["first_seen"],
         "closedAt": f["closed_at"], "cves": f["cves"],
         "assetId": f["asset_silk_id"], "assetName": f["asset_name"],
+        "ignoredType": f["ignored_type"], "ignoredBy": f["ignored_by"],
+        "ignoredHasRationale": f["ignored_has_rationale"], "hasOwner": f["has_owner"],
     }
 
 

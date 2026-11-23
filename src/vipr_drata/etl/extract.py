@@ -12,8 +12,8 @@ TableSpec = namedtuple("TableSpec", "label env_var key required columns")
 TABLE_REGISTRY = [
     TableSpec("findings", "VIPR_FINDINGS_TABLE", "silk_id", True, (
         "silk_id", "finding_display_id", "display_name", "severity", "tool_severity", "open",
-        "is_ignored", "has_ticket", "sla_date", "first_seen", "last_seen", "closed_timestamp",
-        "open_cves", "asset_silk_id", "__date", "__hour")),
+        "is_ignored", "ignored_info", "remediation_owner", "security_owner", "has_ticket", "sla_date",
+        "first_seen", "last_seen", "closed_timestamp", "open_cves", "asset_silk_id", "__date", "__hour")),
     TableSpec("assets", "VIPR_ASSETS_TABLE", "silk_id", True, (
         "silk_id", "name", "asset_type", "is_active", "last_seen", "open_findings_count",
         "hostnames", "mac_addresses", "__date", "__hour")),

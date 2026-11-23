@@ -13,7 +13,7 @@ UI_ORDER = ["equal", "notEqual", "in", "notIn", "contains", "doesNotContain", "s
             "lessThanOrEqual", "greaterThan", "greaterThanOrEqual", "exist", "empty", "isBefore", "isAfter",
             "withinLastDays", "withinNextDays", "withinLastHours", "olderThanDays", "all", "any", "none", "notAll",
             "intersectsAny", "intersectsAll"]
-RECORDS = (("scanSummary", "S"), ("findingPartition", "F"), ("assetPartition", "A"))
+RECORDS = (("scanSummary", "S"), ("ignoreSummary", "I"), ("findingPartition", "F"), ("assetPartition", "A"))
 
 
 def fmt(node, depth=0):
@@ -46,9 +46,9 @@ def fact_tables(schema):
     for rtype, letter in RECORDS:
         for k in next(r for r in records if r["recordType"] == rtype):
             where[k] = where.get(k, "") + letter
-    out = ["Records: S scanSummary, F findingPartition, A assetPartition.", "", "| Fact | Type | Records |", "|---|---|---|"]
+    out = ["Records: S scanSummary, I ignoreSummary, F findingPartition, A assetPartition.", "", "| Fact | Type | Records |", "|---|---|---|"]
     out += ["| `%s` | %s | %s |" % (k, type_label(props[k]), where[k]) for k in props if k in where]
-    for arr in ("findings", "assets"):
+    for arr in ("findings", "assets", "ignoreRules", "manualIgnores"):
         out += ["", "`%s[]` items (Advanced editor, nested rule):" % arr, "", "| Fact | Type |", "|---|---|"]
         out += ["| `%s` | %s |" % (k, type_label(v)) for k, v in props[arr]["items"]["properties"].items()]
     return "\n".join(out)
@@ -69,7 +69,7 @@ def render():
     out = [(HERE / "intro.md").read_text().rstrip(), "", "## Facts", "", fact_tables(schema), "", "## Operators", "",
            operator_table(), "", (HERE / "operators.md").read_text().rstrip(), "", "## Tests", ""]
     for n, t in enumerate(catalog, 1):
-        controls = "; ".join("%s %s" % (c["id"], c["name"]) for c in t["controls"])
+        controls = "; ".join("%s %s" % (c["id"], c["name"]) for c in t["controls"]) or "None (diagnostic)"
         out += ["### %d. %s" % (n, t["name"]), "", "- Controls: %s" % controls, "- Editor: %s" % t["editor"],
                 "- Description: %s" % t["description"]] + (["- Note: %s" % t["note"]] if t.get("note") else []) + ["", "Filtering criteria, Inclusion:", "", block(t["filter"]["evaluator"]), "",
                 "Condition:", "", block(t["condition"]), ""]

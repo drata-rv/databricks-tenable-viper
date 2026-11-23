@@ -41,7 +41,7 @@ def ids(recs):
 
 
 def expected_ids(severities=SMALL, assets=4):
-    return (["vipr-summary"] + ["vipr-findings-%s-%03d" % (severity, i) for severity in SEVERITIES for i in range(1, severities[severity] + 1)]
+    return (["vipr-summary", "vipr-ignores"] + ["vipr-findings-%s-%03d" % (severity, i) for severity in SEVERITIES for i in range(1, severities[severity] + 1)]
             + ["vipr-assets-%03d" % i for i in range(1, assets + 1)])
 
 
@@ -49,7 +49,7 @@ def test_record_set_is_fixed_whatever_the_data():
     for findings, assets in (([], []), ([F(1)], [A(1)]), ([F(i, viprSeverity=SEVERITIES[i % 6]) for i in range(500)], [A(i) for i in range(50)])):
         assert ids(build(findings, assets)) == expected_ids()
     assert sum(DEFAULT_FINDING_PARTITIONS.values()) == 13 and DEFAULT_ASSET_PARTITIONS == 4
-    assert len(build([], [], finding_partitions=None, asset_partitions=DEFAULT_ASSET_PARTITIONS)) == 1 + 13 + 4 == 18
+    assert len(build([], [], finding_partitions=None, asset_partitions=DEFAULT_ASSET_PARTITIONS)) == 2 + 13 + 4 == 19
 
 
 def test_empty_partitions_are_still_submitted_with_empty_arrays():
@@ -180,6 +180,37 @@ def test_ignored_findings_are_not_submitted():
     assert (s["findingCount"], s["openFindingCount"], s["openSlaBreachedCount"], s["openSlaUnknownCount"]) == (2, 2, 1, 1)
     assert s["ignoredFindingsExcludedCount"] == 3
     assert sorted(flatten(recs)["findings"]) == ["f00001", "f00004"]
+
+
+def _ig(i, by=None, kind=None, rationale=False, owner=True):
+    return F(i, ignored=True, ignoredBy=by, ignoredType=kind, ignoredHasRationale=rationale, hasOwner=owner)
+
+
+def test_ignore_summary_counts_sources_owners_and_rationale():
+    findings = [F(1), _ig(2, "Rule A", "automation_rule"), _ig(3, "Rule A", "automation_rule", owner=False),
+                _ig(4, "Rule B", "automation_rule"), _ig(5, "a@example.com", "ui"),
+                _ig(6, "a@example.com", "ui", rationale=True), _ig(7), _ig(8, owner=False)]
+    recs = build(findings, [])
+    ig = next(r for r in recs if r["recordType"] == "ignoreSummary")
+    assert (ig["ignoredCount"], ig["ignoredByRuleCount"], ig["ignoredManualCount"]) == (7, 3, 2)
+    assert (ig["ignoredWithoutSourceCount"], ig["ignoredWithoutOwnerCount"], ig["manualIgnoreWithoutRationaleCount"]) == (2, 1, 1)
+    assert ig["ignoreRules"] == [{"name": "Rule A", "findingCount": 2}, {"name": "Rule B", "findingCount": 1}]
+    assert [(m["id"], m["hasRationale"]) for m in ig["manualIgnores"]] == [("f00005", False), ("f00006", True)]
+    assert recs[0]["findingCount"] == 1 and set(flatten(recs)["findings"]) == {"f00001"}
+
+
+def test_ignore_summary_is_present_and_zero_without_ignored_findings():
+    ig = next(r for r in build([F(1)], []) if r["recordType"] == "ignoreSummary")
+    assert ig["ignoredCount"] == 0 and ig["ignoreRules"] == [] and ig["manualIgnores"] == []
+
+
+def test_ignore_lists_are_capped():
+    from vipr_drata.batching import MAX_IGNORE_RULES, MAX_MANUAL_IGNORES
+    many = [_ig(i, "Rule %d" % i, "automation_rule") for i in range(MAX_IGNORE_RULES + 5)]
+    many += [_ig(10_000 + i, "a@example.com", "ui") for i in range(MAX_MANUAL_IGNORES + 5)]
+    ig = next(r for r in build(many, []) if r["recordType"] == "ignoreSummary")
+    assert len(ig["ignoreRules"]) == MAX_IGNORE_RULES and len(ig["manualIgnores"]) == MAX_MANUAL_IGNORES
+    assert ig["ignoredManualCount"] == MAX_MANUAL_IGNORES + 5
 
 
 def test_summary_counts():

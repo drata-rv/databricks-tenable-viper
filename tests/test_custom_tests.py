@@ -49,7 +49,7 @@ def test_catalog_entries_are_valid_for_the_schema_and_editor_limits(test):
         assert rules.count_conditions(rule) <= rules.MAX_CONDITIONS
         assert len(render.fmt(rule).splitlines()) <= rules.MAX_LINES
     assert test["filter"]["mode"] == "inclusion" and test["editor"] in ("Builder", "Advanced")
-    assert test["controls"] and len(test["name"]) <= 80
+    assert (test["controls"] or test.get("diagnostic")) and len(test["name"]) <= 80
 
 
 def test_catalog_names_are_unique_and_builder_tests_use_builder_operators():
@@ -95,13 +95,13 @@ def test_ignored_findings_are_not_sla_violations():
     assert scoped(BY_ID["critical-high-sla-items"], live)["findings-critical-001"] is False
 
 
-def test_every_test_passes_on_clean_fresh_data_and_fails_on_stale_data():
+def test_every_test_passes_on_clean_data_and_only_the_freshness_test_fails_on_stale_data():
     stale = records([F(1, "critical"), F(2, "high"), F(3, "medium"), F(4, "low")],
                     [{"id": "a1", "viprLastSeenStale": False}], age_days=30)
     for t in CATALOG:
         clean, old = scoped(t, CLEAN), scoped(t, stale)
         assert clean and all(clean.values()), t["id"]
-        assert old and not any(old.values()), t["id"]
+        assert (not any(old.values())) == (t["id"] == "scan-data-current"), t["id"]
 
 
 def test_sync_age_rule_fails_when_the_nightly_run_is_old():
@@ -139,11 +139,35 @@ def test_array_length_path_accepts_number_operators():
     assert rules.evaluate(rule, {"findings": [{}]}, NOW) is True and rules.evaluate(rule, {"findings": []}, NOW) is False
 
 
-def test_every_test_fails_when_the_nightly_sync_stops():
+def test_only_the_freshness_test_fails_when_the_nightly_sync_stops():
+    later = NOW + timedelta(days=10)
     for t in CATALOG:
-        verdicts = {r["id"]: rules.evaluate(t["condition"], r, NOW + timedelta(days=10))
-                    for r in CLEAN if rules.evaluate(t["filter"]["evaluator"], r, NOW + timedelta(days=10))}
-        assert verdicts and not any(verdicts.values()), t["id"]
+        verdicts = [rules.evaluate(t["condition"], r, later) for r in CLEAN if rules.evaluate(t["filter"]["evaluator"], r, later)]
+        assert verdicts and all(verdicts) == (t["id"] != "scan-data-current"), t["id"]
+
+
+def _ig(i, by=None, kind=None, rationale=False, owner=True):
+    return F(i, "low", ignored=True, ignoredBy=by, ignoredType=kind, ignoredHasRationale=rationale, hasOwner=owner)
+
+
+@pytest.mark.parametrize("findings, expected", [
+    ([_ig(1, "Rule A", "automation_rule"), _ig(2, "a@example.com", "ui", rationale=True)],
+     {"ignored-source-recorded": True, "ignored-have-owner": True, "manual-ignores-have-rationale": True}),
+    ([_ig(1)], {"ignored-source-recorded": False, "ignored-have-owner": True, "manual-ignores-have-rationale": True}),
+    ([_ig(1, "Rule A", "automation_rule", owner=False)],
+     {"ignored-source-recorded": True, "ignored-have-owner": False, "manual-ignores-have-rationale": True}),
+    ([_ig(1, "a@example.com", "ui")],
+     {"ignored-source-recorded": True, "ignored-have-owner": True, "manual-ignores-have-rationale": False}),
+])
+def test_ignore_tests_score_each_concern_independently(findings, expected):
+    data = records(findings, [{"id": "a1", "viprLastSeenStale": False}])
+    assert {tid: scoped(BY_ID[tid], data)["ignores"] for tid in expected} == expected
+
+
+def test_manual_ignores_without_rationale_are_listed():
+    data = records([_ig(1, "a@example.com", "ui"), _ig(2, "a@example.com", "ui", rationale=True)], [])
+    ignores = next(r for r in data if r["recordType"] == "ignoreSummary")
+    assert [i["id"] for i in rules.offending_items(BY_ID["manual-ignores-have-rationale"]["condition"], ignores, "manualIgnores")] == ["f1"]
 
 
 def test_rendered_blocks_are_valid_json_equal_to_the_catalog():

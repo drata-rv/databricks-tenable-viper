@@ -69,7 +69,7 @@ def _strict():
     asset = s["properties"]["assets"]["items"]
     asset["properties"]["tenableMatch"] = {"enum": ["matched", "none", "ambiguous", "not_configured", "no_data", None]}
     asset["required"] = ["id", "isActive", "viprLastSeenStale"]
-    s["properties"]["recordType"] = {"enum": ["scanSummary", "findingPartition", "assetPartition"]}
+    s["properties"]["recordType"] = {"enum": ["scanSummary", "ignoreSummary", "findingPartition", "assetPartition"]}
     s["properties"]["severity"] = {"enum": list(SEVERITIES) + [None]}
     s["allOf"] = [
         {"if": {"properties": {"recordType": {"const": "scanSummary"}}, "required": ["recordType"]},
@@ -284,3 +284,37 @@ def test_null_asset_id_never_joins():
 def test_parse_list_fallbacks():
     from vipr_drata.transform import _parse_list
     assert _parse_list("[CVE-1, CVE-2]") == ["CVE-1", "CVE-2"] and _parse_list("") == []
+
+
+IGN_RULE = '{"assignment_type":"automation_rule","details":null,"ignored":"true","assigned_by":"Ignore Retired Assets"}'
+IGN_UI = '{"assignment_type":"ui","details":"Accepted by risk committee","assigned_by":"analyst@example.com"}'
+
+
+def test_ignore_info_is_parsed_from_the_vipr_map():
+    rule = extract_finding_features(finding(is_ignored="true", ignored_info=IGN_RULE, remediation_owner="o@example.com"), [], NOW)
+    assert (rule["ignored"], rule["ignored_type"], rule["ignored_by"]) == (True, "automation_rule", "Ignore Retired Assets")
+    assert (rule["ignored_has_rationale"], rule["has_owner"]) == (False, True)
+    ui = extract_finding_features(finding(is_ignored="true", ignored_info=IGN_UI, security_owner="s@example.com"), [], NOW)
+    assert (ui["ignored_type"], ui["ignored_has_rationale"], ui["has_owner"]) == ("ui", True, True)
+    none = extract_finding_features(finding(is_ignored="true", ignored_info=None, remediation_owner="null"), [], NOW)
+    assert (none["ignored_type"], none["ignored_by"], none["ignored_has_rationale"], none["has_owner"]) == (None, None, False, False)
+
+
+def test_ignored_findings_become_an_ignore_summary_that_matches_the_schema():
+    rows = [finding(silk_id="f1"),
+            finding(silk_id="f2", is_ignored="true", ignored_info=IGN_RULE, remediation_owner="o@example.com"),
+            finding(silk_id="f3", is_ignored="true", ignored_info=IGN_UI),
+            finding(silk_id="f4", is_ignored="true", ignored_info=None)]
+    fs, sc, _ = build_payloads([{"finding": r, "assets": []} for r in rows], [], 7, NOW)
+    records = build_records(fs, sc, now=NOW, finding_partitions=PARTITIONS, asset_partitions=1)
+    ignores = next(r for r in records if r["recordType"] == "ignoreSummary")
+    assert ignores["id"] == "vipr-ignores"
+    assert (ignores["ignoredCount"], ignores["ignoredByRuleCount"], ignores["ignoredManualCount"]) == (3, 1, 1)
+    assert (ignores["ignoredWithoutSourceCount"], ignores["ignoredWithoutOwnerCount"]) == (1, 1)
+    assert ignores["manualIgnoreWithoutRationaleCount"] == 0
+    assert ignores["ignoreRules"] == [{"name": "Ignore Retired Assets", "findingCount": 1}]
+    assert ignores["manualIgnores"][0]["ignoredBy"] == "analyst@example.com" and ignores["manualIgnores"][0]["hasRationale"] is True
+    assert next(r for r in records if r["recordType"] == "scanSummary")["ignoredFindingsExcludedCount"] == 3
+    for rec in records:
+        jsonschema.Draft202012Validator(_schema()).validate(rec)
+        jsonschema.Draft202012Validator(_strict()).validate(rec)

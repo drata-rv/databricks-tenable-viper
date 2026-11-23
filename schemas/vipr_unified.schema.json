@@ -178,6 +178,42 @@
         "null"
       ]
     },
+    "ignoredCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "ignoredByRuleCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "ignoredManualCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "ignoredWithoutSourceCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "ignoredWithoutOwnerCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "manualIgnoreWithoutRationaleCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "findings": {
       "type": [
         "array",
@@ -395,6 +431,73 @@
           }
         },
         "additionalProperties": true
+      }
+    },
+    "ignoreRules": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "findingCount": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "manualIgnores": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "displayId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ignoredBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hasRationale": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "hasOwner": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "assetId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       }
     }
   },

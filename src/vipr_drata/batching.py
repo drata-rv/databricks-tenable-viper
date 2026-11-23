@@ -1,6 +1,7 @@
 import json
 import math
 import zlib
+from collections import Counter
 from datetime import timedelta
 
 from .db.secrets import ConfigError
@@ -15,6 +16,8 @@ MAX_RECORD_BYTES_LIMIT = 4_500_000
 TRISTATE = ("open", "ignored", "hasTicket", "missingTicket", "slaBreached", "severityChanged", "closedAfterSla",
             "isActive", "viprLastSeenStale", "tenableScanStale")
 CVE_CAP = 25
+MAX_IGNORE_RULES = 200
+MAX_MANUAL_IGNORES = 1000
 TEXT_CAP = 200
 TEXT_KEYS = ("displayId", "assetName", "name", "assetId", "toolSeverities")
 FINDING_KEYS = ("id", "displayId", "viprSeverity", "scannerSeverity", "severityChanged", "severityDirection",
@@ -148,6 +151,38 @@ def auto_partitions(items, minimum, target_bytes, label="findings"):
     return max(minimum, n)
 
 
+def _cap(text):
+    text = text or "unnamed"
+    return text if len(text) <= TEXT_CAP else text[:TEXT_CAP - 3] + "..."
+
+
+def ignore_record(ignored, stamp):
+    rules, manual = Counter(), []
+    without_source = without_owner = by_rule = without_rationale = 0
+    for f in ignored:
+        by, kind = f.get("ignoredBy"), f.get("ignoredType")
+        if not by and not kind:
+            without_source += 1
+            continue
+        without_owner += not f.get("hasOwner")
+        if kind == "automation_rule":
+            by_rule += 1
+            rules[_cap(by)] += 1
+        else:
+            without_rationale += not f.get("ignoredHasRationale")
+            manual.append({"id": f["id"], "displayId": f.get("displayId"), "ignoredBy": _cap(by),
+                           "hasRationale": bool(f.get("ignoredHasRationale")), "hasOwner": bool(f.get("hasOwner")),
+                           "assetId": f.get("assetId")})
+    return {
+        "id": "%s-ignores" % RECORD_PREFIX, "recordType": "ignoreSummary", "displayName": "Vipr Ignored Findings", **stamp,
+        "ignoredCount": len(ignored), "ignoredByRuleCount": by_rule, "ignoredManualCount": len(manual),
+        "ignoredWithoutSourceCount": without_source, "ignoredWithoutOwnerCount": without_owner,
+        "manualIgnoreWithoutRationaleCount": without_rationale,
+        "ignoreRules": [{"name": n, "findingCount": c} for n, c in sorted(rules.items(), key=lambda x: (-x[1], x[0]))[:MAX_IGNORE_RULES]],
+        "manualIgnores": sorted(manual, key=lambda m: m["id"])[:MAX_MANUAL_IGNORES],
+    }
+
+
 def _group(items, partitions):
     groups = [[] for _ in range(partitions)]
     for it in items:
@@ -164,10 +199,10 @@ def build_records(findings, assets, *, now, finding_partitions=None, asset_parti
     if asset_partitions < 1 or any(n < 1 for n in finding_partitions.values()):
         raise ConfigError("partition counts must be >= 1")
     cutoff = now - timedelta(days=closed_lookback_days)
-    kept, excluded, ignored = [], 0, 0
+    kept, excluded, ignored = [], 0, []
     for f in findings:
         if f.get("ignored") is True:
-            ignored += 1
+            ignored.append(f)
             continue
         closed = _parse_ts(f.get("closedAt"))
         if f.get("open") is False and closed is not None and closed < cutoff:
@@ -186,7 +221,8 @@ def build_records(findings, assets, *, now, finding_partitions=None, asset_parti
     stamp = freshness(now, source_dates or {}, max_source_age_days)
     records = [_summary(kept, asset_items, stamp=stamp, source_dates=source_dates or {},
                         finding_partitions=finding_partitions, asset_partitions=asset_partitions,
-                        closed_excluded=excluded, ignored_excluded=ignored, rejected=rejected)]
+                        closed_excluded=excluded, ignored_excluded=len(ignored), rejected=rejected),
+               ignore_record(ignored, stamp)]
     for sev in SEVERITIES:
         n = finding_partitions.get(sev, DEFAULT_FINDING_PARTITIONS[sev])
         for i, grp in enumerate(_group(by_severity[sev], n), 1):

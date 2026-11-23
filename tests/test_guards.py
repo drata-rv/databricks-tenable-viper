@@ -251,7 +251,7 @@ def test_push_prints_the_target_http_counts_and_confirms_records_landed(monkeypa
     out = capsys.readouterr()
     assert "drata target" in out.out
     assert "connection_id=27 resource_id=2" in out.out and "drata http.summary responses=200:1,201:2" in out.out
-    assert "verify result sampled=3 resource_total=3 ours_present=2 ours_sent=18" in out.out
+    assert "verify result sampled=3 resource_total=3 ours_present=2 ours_sent=19" in out.out
     assert "records.not_visible" not in out.err
 
 
