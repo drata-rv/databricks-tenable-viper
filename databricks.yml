@@ -3,7 +3,7 @@ bundle:
 
 variables:
   secret_scope:
-    default: vipr-drata-test
+    default: dbx_irg_dev_comp_sp
   warehouse_id:
     default: ""
   findings_table:
