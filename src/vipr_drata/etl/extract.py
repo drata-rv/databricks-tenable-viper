@@ -4,6 +4,7 @@ from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 
 from .. import log
+from ..db.access import classify
 from ..db.queries import latest_batch_clause, run_sql
 from ..transform import collapse_identical
 
@@ -43,11 +44,27 @@ def _pull(client, warehouse_id, spec):
     return spec.label, rows
 
 
+def _pull_checked(client, warehouse_id, spec):
+    try:
+        return _pull(client, warehouse_id, spec)
+    except Exception as e:
+        reason = classify(e)
+        if spec.required or reason == "error":
+            log.error("extract", "table.failed", table=spec.label, reason=reason, error_type=type(e).__name__, detail=str(e)[:300])
+            return spec.label, e
+        log.warn("extract", "table.skipped", table=spec.label, reason=reason, effect="fields_unavailable")
+        return spec.label, None
+
+
 def extract_all(client, warehouse_id):
     specs = active_specs()
     log.info("extract", "start", tables=[s.label for s in specs], parallel=True)
     with ThreadPoolExecutor(max_workers=len(specs)) as ex:
-        return dict(ex.map(lambda s: _pull(client, warehouse_id, s), specs))
+        results = list(ex.map(lambda s: _pull_checked(client, warehouse_id, s), specs))
+    failed = [label for label, rows in results if isinstance(rows, Exception)]
+    if failed:
+        raise RuntimeError("tables unavailable: " + ", ".join(failed))
+    return {label: rows for label, rows in results if rows is not None}
 
 
 def merge(tables):

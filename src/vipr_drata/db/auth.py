@@ -1,25 +1,35 @@
 import os
 
-from .secrets import get_secret
+from .. import log
+from .access import classify
+from .secrets import get_secret, on_databricks
 
 
 def scope_for(workspace):
     return os.getenv("DATABRICKS_SECRET_SCOPE_%s" % workspace.upper()) or os.getenv("DATABRICKS_SECRET_SCOPE")
 
 
-def get_client_for_env(workspace):
+def get_client_for_env(workspace, profile=None):
     from databricks.sdk import WorkspaceClient
 
+    if profile:
+        return WorkspaceClient(profile=profile)
     ws = workspace.lower()
     up = workspace.upper()
     scope = scope_for(workspace)
-    host = get_secret("databricks-host-" + ws, scope=scope, env_var="DATABRICKS_HOST_" + up)
-    cid = get_secret("databricks-client-id-" + ws, scope=scope, env_var="DATABRICKS_CLIENT_ID_" + up, required=False)
-    csec = get_secret("databricks-client-secret-" + ws, scope=scope, env_var="DATABRICKS_CLIENT_SECRET_" + up, required=False)
-    if cid and csec:
-        return WorkspaceClient(host=host, client_id=cid, client_secret=csec)
-    token = get_secret("databricks-token-" + ws, scope=scope, env_var="DATABRICKS_TOKEN_" + up)
-    return WorkspaceClient(host=host, token=token)
+    try:
+        host = get_secret("databricks-host-" + ws, scope=scope, env_var="DATABRICKS_HOST_" + up)
+        cid = get_secret("databricks-client-id-" + ws, scope=scope, env_var="DATABRICKS_CLIENT_ID_" + up, required=False)
+        csec = get_secret("databricks-client-secret-" + ws, scope=scope, env_var="DATABRICKS_CLIENT_SECRET_" + up, required=False)
+        if cid and csec:
+            return WorkspaceClient(host=host, client_id=cid, client_secret=csec)
+        token = get_secret("databricks-token-" + ws, scope=scope, env_var="DATABRICKS_TOKEN_" + up)
+        return WorkspaceClient(host=host, token=token)
+    except Exception as e:
+        if not (on_databricks() and classify(e) == "denied"):
+            raise
+        log.warn("auth", "fallback", source="job_identity", reason="secret_scope_denied", scope=scope, detail=str(e)[:200])
+        return WorkspaceClient()
 
 
 # prod never falls back to the sandbox key; scope is the running workspace's

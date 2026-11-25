@@ -73,11 +73,15 @@ Before sending, the run reads the resource schema: it aborts (exit 2) when the s
 
 ## Databricks
 
-Set `DATABRICKS_{HOST,TOKEN,CLIENT_ID,CLIENT_SECRET}_{TEST|PROD}`, `DATABRICKS_WAREHOUSE_ID`, `VIPR_FINDINGS_TABLE` and `VIPR_ASSETS_TABLE` in `.env`.
+Set `DATABRICKS_{HOST,TOKEN,CLIENT_ID,CLIENT_SECRET}_{TEST|PROD}`, `DATABRICKS_WAREHOUSE_ID`, `VIPR_FINDINGS_TABLE` and `VIPR_ASSETS_TABLE` in `.env`. `--workspace test|prod` picks which set.
+
+To use a Databricks CLI login instead, run `databricks auth login --host <url> --profile <name>`, then `vipr-drata --profile <name>` or `DATABRICKS_CONFIG_PROFILE=<name>`. The profile supplies host and credentials; local runs only.
 
 Serverless has no PyPI access: `vendor/` holds the pure-Python wheels for `databricks-sdk` and `requests`, installed by `databricks.yml`. Refresh with `pip download -d vendor --only-binary=:all: --platform any --python-version 3.12 databricks-sdk==0.40.0 'requests>=2.31,<3'`. `python-dotenv` is an extra for local `.env` loading.
 
 Deploy: bump `version` in `pyproject.toml`, then `databricks bundle deploy -t test|prod`. Prod needs `findings_table`, `assets_table`, `run_as` and `workspace.host`.
+
+Missing access degrades instead of aborting: a denied secret scope falls back to the job identity for SQL; an optional table (`TENABLE_ASSETS_TABLE`) without access is skipped with `extract table.skipped`; a denied Drata key still builds and writes the records, then logs `drata push.skipped` and exits 1. Required tables without access are all listed in one run (`extract table.failed`).
 
 `_profile.json` explains null fields: tool severity keys and values, asset join outcomes, null counts.
 

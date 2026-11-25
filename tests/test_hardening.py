@@ -202,7 +202,33 @@ def test_every_tunable_the_cli_reads_reaches_the_job():
     code = (ROOT / "src" / "vipr_drata" / "cli.py").read_text()
     read = set(re.findall(r'_env_(?:number|str)\(\s*"([A-Z][A-Z0-9_]+)"', code)) | set(re.findall(r'getenv\(\s*"([A-Z][A-Z0-9_]+)"', code))
     job_only_skipped = {"OUTPUT_DIR", "LOCAL_DATA_DIR", "LOCAL_ROWS", "DATABRICKS_WORKSPACE", "DATABRICKS_WAREHOUSE_ID", "DRATA_API_BASE",
-                        "VIPR_DRATA_NO_DOTENV"}
+                        "VIPR_DRATA_NO_DOTENV", "DATABRICKS_CONFIG_PROFILE"}
     yml = (ROOT / "databricks.yml").read_text()
     passed = set(re.findall(r"^\s+- ([A-Z][A-Z0-9_]+)=\$\{var\.", yml, flags=re.M))
     assert not sorted(k for k in read - job_only_skipped - passed if not k.startswith("DRATA_API_KEY")), "not passed to the job"
+
+
+def test_profile_builds_the_client_without_env_credentials(monkeypatch):
+    for k in list(os.environ):
+        if k.startswith("DATABRICKS_"):
+            monkeypatch.delenv(k)
+    with mock.patch("databricks.sdk.WorkspaceClient") as wc:
+        from vipr_drata.db.auth import get_client_for_env
+        get_client_for_env("prod", "nationwide-prod")
+    wc.assert_called_once_with(profile="nationwide-prod")
+
+
+@pytest.mark.parametrize("argv,env,expected", [
+    (["--profile", "test"], {}, "test"),
+    ([], {"DATABRICKS_CONFIG_PROFILE": "prod"}, "prod"),
+    ([], {}, None),
+])
+def test_profile_reaches_the_client_factory(tmp_path, monkeypatch, argv, env, expected):
+    monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
+    monkeypatch.setenv("VIPR_FINDINGS_TABLE", "c.s.f")
+    monkeypatch.setenv("VIPR_ASSETS_TABLE", "c.s.a")
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    with mock.patch.object(cli, "get_client_for_env", side_effect=cli.ConfigError("stop")) as gc:
+        cli.main(["--dry-run", "--output-dir", str(tmp_path), "--warehouse-id", "w", *argv])
+    gc.assert_called_once_with("test", expected)

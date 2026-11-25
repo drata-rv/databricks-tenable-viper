@@ -6,6 +6,7 @@ import sys
 import threading
 from datetime import datetime, timezone
 
+from .db.access import classify
 from .db.auth import drata_api_key, get_client_for_env
 from .db.drata_client import DrataClient
 from .db.queries import is_true
@@ -86,6 +87,7 @@ def parse_scale(raw):
 def build_parser():
     p = argparse.ArgumentParser(prog="vipr-drata")
     p.add_argument("--workspace", default=_env_str("DATABRICKS_WORKSPACE", "test"), help="Databricks source: test|prod")
+    p.add_argument("--profile", default=_env_str("DATABRICKS_CONFIG_PROFILE", ""), help="Databricks CLI profile; replaces the DATABRICKS_*_TEST|PROD credentials")
     p.add_argument("--warehouse-id", default=os.getenv("DATABRICKS_WAREHOUSE_ID"))
     p.add_argument("--output-dir", default=_env_str("OUTPUT_DIR", "output"))
     p.add_argument("--stale-days", type=int, default=_env_number("SCAN_STALE_DAYS", 7, int), help="asset staleness window, days")
@@ -222,8 +224,8 @@ def _main(argv):
         log.info("local", "tables.loaded", path=args.local_data, **{k: len(v) for k, v in tables.items()})
     else:
         try:
-            log.info("extract", "connect", workspace=args.workspace)
-            tables = extract_all(get_client_for_env(args.workspace), args.warehouse_id)
+            log.info("extract", "connect", workspace=args.workspace, profile=args.profile or None)
+            tables = extract_all(get_client_for_env(args.workspace, args.profile or None), args.warehouse_id)
             log.info("extract", "complete", **{k: len(v) for k, v in tables.items()})
         except ConfigError:
             raise
@@ -285,8 +287,14 @@ def _main(argv):
              connection_id=os.environ["DRATA_CONNECTION_ID"], resource_id=os.environ["DRATA_RESOURCE_ID"])
     if args.local and push_mode == "session":
         log.warn("drata", "local_session_push.replaces_resource", data="synthetic")
-    dc = DrataClient(base_url,
-                     drata_api_key(args.drata_prod, args.workspace))
+    try:
+        api_key = drata_api_key(args.drata_prod, args.workspace)
+    except Exception as e:
+        if classify(e) != "denied":
+            raise
+        log.error("drata", "push.skipped", reason="api_key_denied", records=len(records), output=args.output_dir, detail=str(e)[:200])
+        return 1
+    dc = DrataClient(base_url, api_key)
     if _schema_mismatch(dc, os.environ["DRATA_CONNECTION_ID"], os.environ["DRATA_RESOURCE_ID"], records):
         return 2
     session_id = "vipr-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
